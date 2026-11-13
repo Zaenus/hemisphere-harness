@@ -88,7 +88,11 @@ class Harness:
         plan = await self.right.plan(state)
         state.situation, state.plan = plan.situation, plan.steps
         trace.emit(
-            Actor.RIGHT, "plan", plan.situation, *(f"{i}. {s}" for i, s in enumerate(plan.steps, 1))
+            Actor.RIGHT,
+            "plan",
+            plan.situation,
+            *(f"{i}. {s}" for i, s in enumerate(plan.steps, 1)),
+            data={"plan": plan.model_dump(mode="json")},
         )
 
         status = RunStatus.MAX_STEPS
@@ -102,8 +106,13 @@ class Harness:
                 break
 
         report = await self.right.generate(REPORT_PROMPT.format(status=status), state)
-        trace.emit(Actor.RIGHT, "report", report)
-        trace.emit(Actor.HARNESS, "end", f"{status.upper()} after {len(state.history)} step(s)")
+        trace.emit(Actor.RIGHT, "report", report, data={"report": report})
+        trace.emit(
+            Actor.HARNESS,
+            "end",
+            f"{status.upper()} after {len(state.history)} step(s)",
+            data={"status": status, "steps": len(state.history)},
+        )
         return RunResult(status=status, state=state, report=report, trace=trace.events)
 
     async def step(self, state: WorldState, trace: Trace | None = None) -> StepRecord:
@@ -123,6 +132,7 @@ class Harness:
             proposal.rationale,
             *(f"• {option.id}: {option.description}" for option in proposal.options),
             step=index,
+            data={"proposal": proposal.model_dump(mode="json"), "authority": authority},
         )
 
         # LEFT answers within it. A failure here is survivable: the right carries on alone.
@@ -143,7 +153,14 @@ class Harness:
             verdict = evaluation.verdict.replace("_", " ")
             if evaluation.verdict is Verdict.COMMIT:
                 verdict += f" '{evaluation.option_id}'"
-            trace.emit(Actor.RIGHT, "evaluate", verdict, evaluation.reasoning, step=index)
+            trace.emit(
+                Actor.RIGHT,
+                "evaluate",
+                verdict,
+                evaluation.reasoning,
+                step=index,
+                data={"evaluation": evaluation.model_dump(mode="json")},
+            )
             decision = self._resolve(proposal, decision, evaluation)
             self._trace_gate(trace, index, decision)
 
@@ -157,6 +174,7 @@ class Harness:
                 "act",
                 f"{option.id} → {action.output}" if action.ok else f"{option.id} FAILED: {action.output}",
                 step=index,
+                data={"action": action.model_dump(mode="json")},
             )
 
         # RIGHT folds the step back into the whole. This is the only write to the situation.
@@ -178,6 +196,7 @@ class Harness:
             reintegration.situation,
             "goal met" if reintegration.goal_met else "goal not yet met",
             step=index,
+            data={"reintegration": reintegration.model_dump(mode="json")},
         )
         return record
 
@@ -313,7 +332,7 @@ class Harness:
         self, trace: Trace, index: int, left: LeftResult | None, decision: Decision, failure: str
     ) -> None:
         if left is None:
-            trace.emit(Actor.LEFT, "decide", f"unavailable: {failure}", step=index)
+            trace.emit(Actor.LEFT, "decide", f"unavailable: {failure}", step=index, data={"error": failure})
             return
         latency = f", {left.latency_ms:.0f} ms" if left.latency_ms is not None else ""
         details = [_distribution(decision.probabilities)]
@@ -326,6 +345,12 @@ class Harness:
             f"[{left.model or self.left.name}, {len(left.answers)} question(s){latency}]",
             *details,
             step=index,
+            data={
+                "decision": decision.model_dump(mode="json"),
+                "model": left.model or self.left.name,
+                "latency_ms": left.latency_ms,
+                "questions": len(left.answers),
+            },
         )
 
     def _trace_gate(self, trace: Trace, index: int, decision: Decision) -> None:
@@ -333,7 +358,7 @@ class Harness:
             summary = f"PROCEED: the {decision.committed_by} commits '{decision.option_id}'"
             if decision.committed_by is Hemisphere.LEFT:
                 summary += f" (p={decision.probability:.2f} ≥ {self.config.commit_threshold:.2f})"
-            trace.emit(Actor.HARNESS, "gate", summary, step=index)
+            trace.emit(Actor.HARNESS, "gate", summary, step=index, data={"decision": decision.model_dump(mode="json")})
             return
         label = {
             Outcome.ESCALATE_TO_RIGHT: "BACK TO THE RIGHT",
@@ -342,7 +367,14 @@ class Harness:
         }[decision.outcome]
         # After the right has resolved a decision, only its closing reason is new.
         reasons = decision.reasons if decision.outcome is Outcome.ESCALATE_TO_RIGHT else decision.reasons[-1:]
-        trace.emit(Actor.HARNESS, "gate", label, *reasons, step=index)
+        trace.emit(
+            Actor.HARNESS,
+            "gate",
+            label,
+            *reasons,
+            step=index,
+            data={"decision": decision.model_dump(mode="json"), "new_reasons": reasons},
+        )
 
     async def aclose(self) -> None:
         await self.left.aclose()

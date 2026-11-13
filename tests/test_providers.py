@@ -34,7 +34,7 @@ from hemisphere_harness import (
     register_right,
     right_providers,
 )
-from hemisphere_harness.__main__ import main as list_providers
+from hemisphere_harness.cli import list_providers
 
 
 @pytest.fixture

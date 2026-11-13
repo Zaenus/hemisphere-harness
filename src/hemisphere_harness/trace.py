@@ -6,7 +6,7 @@ import sys
 import textwrap
 from collections.abc import Callable
 from enum import StrEnum
-from typing import TextIO
+from typing import Any, TextIO
 
 from pydantic import BaseModel, Field
 
@@ -23,6 +23,9 @@ class TraceEvent(BaseModel):
     summary: str
     details: list[str] = Field(default_factory=list)
     step: int | None = None
+    data: dict[str, Any] = Field(default_factory=dict)
+    """The same event as structured data (the proposal, the decision, ...), for interfaces
+    that draw it rather than print it. JSON-ready. The printer ignores it."""
 
 
 EventSink = Callable[[TraceEvent], None]
@@ -36,10 +39,16 @@ class Trace:
         self._sink = sink
 
     def emit(
-        self, actor: Actor, phase: str, summary: str, *details: str, step: int | None = None
+        self,
+        actor: Actor,
+        phase: str,
+        summary: str,
+        *details: str,
+        step: int | None = None,
+        data: dict[str, Any] | None = None,
     ) -> None:
         event = TraceEvent(
-            actor=actor, phase=phase, summary=summary, details=list(details), step=step
+            actor=actor, phase=phase, summary=summary, details=list(details), step=step, data=data or {}
         )
         self.events.append(event)
         if self._sink is not None:

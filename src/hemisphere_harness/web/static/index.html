@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hemisphere Harness</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/app.css">
+<script type="module" src="/static/app.js"></script>
+</head>
+<body>
+<div class="app" id="app">
+  <aside class="sidebar" id="sidebar">
+    <div class="brand">
+      <img src="/favicon.svg" alt="" width="26" height="26">
+      <div>
+        <div class="brand-name">Hemisphere Harness</div>
+        <div class="brand-sub">Master &amp; Emissary</div>
+      </div>
+    </div>
+    <button class="btn primary block" id="new-run" type="button">New run</button>
+    <div class="side-label">Runs</div>
+    <nav class="run-list" id="run-list" aria-label="Runs"></nav>
+    <div class="side-foot">
+      <div class="hemi-status" id="hemi-status"></div>
+      <button class="nav-item" id="open-settings" type="button">Settings</button>
+    </div>
+  </aside>
+  <div class="topbar">
+    <button class="icon-btn" id="menu" type="button" aria-label="Menu"></button>
+    <span class="brand-name">Hemisphere Harness</span>
+  </div>
+  <main class="main" id="main" tabindex="-1"></main>
+</div>
+<div class="modal-backdrop" id="settings" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="settings-title"></div>
+</div>
+<div class="toasts" id="toasts" aria-live="polite"></div>
+</body>
+</html>

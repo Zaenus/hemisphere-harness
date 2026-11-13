@@ -9,7 +9,13 @@ pip install -e ".[dev]"                               # or: uv pip install -e ".
 pytest
 python -m hemisphere_harness.examples.simple_loop     # the offline demo
 python -m hemisphere_harness                          # lists providers
+hemisphere-harness web                                # the web UI
 ```
+
+The web UI's page is plain HTML, CSS and JavaScript in `src/hemisphere_harness/web/static/`,
+with no build step and no dependencies. Edit and reload. Insert anything a model or a
+user wrote with `textContent`, never `innerHTML`, and keep everything loaded from the
+server itself, because the Content-Security-Policy allows nothing else.
 
 The test suite makes no network calls and needs no credentials. Please keep it that way:
 test HTTP clients against `httpx.MockTransport`, as `tests/test_jev_client.py` and

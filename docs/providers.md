@@ -310,6 +310,34 @@ Plugins are imported only when someone selects them by name, so a broken plugin 
 nobody else. A plugin cannot take over a built-in name: if one declares `openai` or
 `jev`, the built-in is used.
 
+### Showing it in the web UI
+
+The settings page lists every registered provider. Four optional arguments to
+`register_right` and `register_left` tell it what to show:
+
+| Argument | The page uses it to |
+|---|---|
+| `base_url` | show the default endpoint, and decide where a provider's own key may be sent |
+| `api_key_env` | show a key field for that variable |
+| `settings` | show these variables, in this order, as fields |
+| `experimental=True` | label the provider and warn before it is used |
+
+```python
+from hemisphere_harness import Settings, register_right
+
+
+def build(settings: Settings): ...   # the factory from the example above
+
+
+register_right("acme", build, summary="Acme · key: ACME_API_KEY",
+               base_url="https://api.acme.example", api_key_env="ACME_API_KEY",
+               settings=("RIGHT_MODEL", "RIGHT_TIMEOUT_S"))
+```
+
+`register_openai_compatible` fills them in for you. The page can show fields only for
+variables it knows, so a provider that reads variables of its own should document them.
+An installed plugin appears on the page under its name, without fields.
+
 ## Adding a left-hemisphere provider
 
 Subclass `LeftHemisphere` and implement `_decide(state, questions)`, returning a

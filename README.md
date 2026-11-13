@@ -81,6 +81,55 @@ python -m hemisphere_harness.examples.simple_loop
 
 The example never touches a real system. Its actions are simulated.
 
+## Web UI
+
+![A run in the web UI: the right proposes, the left's probabilities against the thresholds, and the gate's verdict](docs/images/web-run.png)
+
+```bash
+pip install -e ".[web]"         # already included in .[dev]
+hemisphere-harness web
+```
+
+This starts a local server at `http://127.0.0.1:8765` and opens it in your browser. It has
+four parts:
+
+- **Settings for both hemispheres.** Pick a provider and fetch the list of models its
+  endpoint serves; for Ollama the left only accepts decision models. Enter API keys, and
+  test each hemisphere with one small real call. Settings are saved to `.env` in the
+  directory you started from, which is the same file the command-line example reads.
+- **New runs.** Each run has a goal, context, an operator policy and a step limit. The
+  two demo tickets run offline until a right hemisphere is set up.
+- **A live view of every run.** It shows which hemisphere did what, the left's
+  probabilities against the commit and policy thresholds, each gate's verdict and why,
+  and the right's report.
+- **Sign-off.** When the harness stops for a human, the page shows the flagged options,
+  with the right's recommendation and the left's pick. Approving one starts a follow-up
+  run with your decision in its context. The harness cannot yet resume the stopped run
+  itself.
+
+Run history is kept in `./.hemisphere/`. Actions in the UI are always simulated.
+
+| Option | Default | |
+|---|---|---|
+| `--port` | `8765` | |
+| `--host` | `127.0.0.1` | Anything else exposes the UI, and your keys, to the network. Prefer an SSH tunnel. |
+| `--no-open` | | Do not open a browser. |
+| `--env-file` | `./.env` | The settings file to read and write. |
+| `--data-dir` | `./.hemisphere` | Where run history is kept. |
+
+The server holds your API keys and can spend money with them, so it protects them:
+
+- It listens on loopback only, and refuses requests that name any other host.
+- It opens through a one-time link with a token, printed in the terminal. A new token is
+  made each time it starts, unless you set `HARNESS_WEB_TOKEN`.
+- Keys are write-only: the page never receives a saved key. The `.env` file is readable
+  by your user only.
+- A variable exported in your shell overrides the file. The page marks such fields
+  "from your shell".
+- Model output is shown as text only, under a strict Content-Security-Policy.
+
+`python -m hemisphere_harness web` works too. Without `web`, the command lists providers.
+
 ## Example run
 
 The offline example works two support tickets. The first is routine. In step 1 the left
@@ -319,7 +368,8 @@ src/hemisphere_harness/
 ├── trace.py                the record of who did what, and its printer
 ├── errors.py
 ├── _http.py                POST with retries, shared by both clients
-├── __main__.py             `python -m hemisphere_harness` lists providers
+├── cli.py                  `hemisphere-harness`: lists providers, or starts the web UI
+├── __main__.py             `python -m hemisphere_harness`, the same command
 ├── right/
 │   ├── base.py             RightHemisphere: plan, propose, evaluate, reintegrate, generate
 │   ├── llm.py              LLMRightHemisphere: all of the above from one method, complete()
@@ -331,6 +381,11 @@ src/hemisphere_harness/
 │   ├── jev_client.py       the System One protocol: hosted Jev, or a decision model on Ollama
 │   ├── experimental.py     EXPERIMENTAL: a chat model read through token probabilities
 │   └── mock.py
+├── web/
+│   ├── app.py              the server: JSON API, live event stream, access control
+│   ├── runs.py             runs started from the UI, streamed and kept on disk
+│   ├── envfile.py          the settings the UI can change, and the .env file it writes
+│   └── static/             the page: plain HTML, CSS and JavaScript, no build step
 └── examples/simple_loop.py
 tests/
 docs/architecture.md        the contract in detail, and where to extend
@@ -357,7 +412,7 @@ This is a first version, kept small on purpose.
   not: it allowed a refund that the policy required sign-off for. Two tickets are not an
   evaluation. `docs/providers.md` has the details.
 - **A small chat model makes a cautious right.** `gemma4` labelled most of its proposals
-  high-stakes (12 of 15 across three runs), which keeps the left advising instead of
+  high-stakes (12 of 17 across four runs), which keeps the left advising instead of
   committing.
 - **The chat-model left is experimental.** `llm-experimental` reads a chat model's token
   probabilities as if it were a decision model. They are not calibrated, and they come
@@ -368,7 +423,9 @@ This is a first version, kept small on purpose.
 - **Actions are one callable.** There is no tool registry yet. See the extension points
   in `docs/architecture.md`.
 - **A run is self-contained.** There is no memory across runs and no built-in way to
-  resume after a human signs off.
+  resume after a human signs off. The web UI's sign-off starts a follow-up run instead.
+- **The web UI is for one person on one machine.** It has a launch token, not user
+  accounts, and it cannot store a value containing `${` because `.env` files expand it.
 - Jev's image inputs and `box` questions are not supported.
 
 ## Contributing

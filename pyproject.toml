@@ -18,11 +18,19 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+web = [
+    "starlette>=0.40",
+    "uvicorn>=0.30",
+]
 dev = [
+    "hemisphere-harness[web]",
     "pytest>=8",
     "pytest-asyncio>=0.24",
     "mypy>=1.10",
 ]
+
+[project.scripts]
+hemisphere-harness = "hemisphere_harness.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/hemisphere_harness"]

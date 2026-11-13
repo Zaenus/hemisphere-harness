@@ -23,6 +23,7 @@ from typing import Generic, TypeVar
 from .config import Settings
 from .errors import ConfigError
 from .left import ExperimentalLLMLeft, JevLeftHemisphere, LeftHemisphere, MockLeftHemisphere
+from .left.jev_client import DEFAULT_BASE_URL as JEV_BASE_URL
 from .right import OpenAICompatibleRight, RightHemisphere
 
 H = TypeVar("H")
@@ -34,6 +35,14 @@ class Provider(Generic[H]):
     build: Callable[[Settings], H]
     summary: str = ""
     aliases: tuple[str, ...] = ()
+    # What an interface needs in order to offer the provider. All optional.
+    base_url: str | None = None
+    """The provider's own endpoint, if it has one."""
+    api_key_env: str | None = None
+    """The variable its key conventionally lives in, if it needs one."""
+    settings: tuple[str, ...] = ()
+    """The environment variables that configure it, most important first."""
+    experimental: bool = False
 
 
 class Registry(Generic[H]):
@@ -54,15 +63,26 @@ class Registry(Generic[H]):
         summary: str = "",
         aliases: tuple[str, ...] = (),
         replace: bool = False,
+        base_url: str | None = None,
+        api_key_env: str | None = None,
+        settings: tuple[str, ...] = (),
+        experimental: bool = False,
     ) -> None:
-        """Add a provider. Names are case-insensitive. Reusing a name needs replace=True."""
+        """Add a provider. Names are case-insensitive. Reusing a name needs replace=True.
+
+        `base_url`, `api_key_env`, `settings` and `experimental` describe the provider to
+        interfaces such as the web UI, which uses them to show the right fields. The
+        harness itself ignores them.
+        """
         name = _key(name)
         aliases = tuple(_key(alias) for alias in aliases)
         if not replace:
             for key in (name, *aliases):
                 if key in self._providers or key in self._aliases:
                     raise ConfigError(f"a {self.kind}-hemisphere provider named '{key}' already exists")
-        self._providers[name] = Provider(name, build, summary, aliases)
+        self._providers[name] = Provider(
+            name, build, summary, aliases, base_url, api_key_env, settings, experimental
+        )
         for alias in aliases:
             self._aliases[alias] = name
 
@@ -80,6 +100,14 @@ class Registry(Generic[H]):
 
     def build(self, name: str, settings: Settings) -> H:
         return self.get(name).build(settings)
+
+    def providers(self) -> list[Provider[H]]:
+        """Every registered provider, in name order. Imports no plugin."""
+        return [self._providers[name] for name in sorted(self._providers)]
+
+    def plugin_names(self) -> list[str]:
+        """Plugins that are installed but not imported yet."""
+        return sorted(self._plugins())
 
     def names(self) -> list[str]:
         """Every provider name, including plugins that have not been imported yet."""
@@ -122,6 +150,11 @@ left_providers: Registry[LeftHemisphere] = Registry("left", "LEFT_PROVIDER", "he
 
 register_right = right_providers.register
 register_left = left_providers.register
+
+
+RIGHT_SETTINGS = (
+    "RIGHT_MODEL", "RIGHT_BASE_URL", "RIGHT_API_KEY", "RIGHT_TIMEOUT_S", "RIGHT_TEMPERATURE", "RIGHT_JSON_MODE",
+)  # fmt: skip
 
 
 def build_right(settings: Settings) -> RightHemisphere:
@@ -182,7 +215,16 @@ def register_openai_compatible(
         summary = "any OpenAI-compatible server · set RIGHT_BASE_URL"
     else:
         summary = f"{base_url} · " + (f"key: {api_key_env}" if api_key_env else "no key")
-    register_right(name, build, summary=summary, aliases=aliases, replace=replace)
+    register_right(
+        name,
+        build,
+        summary=summary,
+        aliases=aliases,
+        replace=replace,
+        base_url=base_url,
+        api_key_env=api_key_env,
+        settings=RIGHT_SETTINGS,
+    )
 
 
 # --- Built-in right-hemisphere providers -------------------------------------------------
@@ -265,21 +307,34 @@ def _auto(settings: Settings) -> LeftHemisphere:
     return left_providers.build("jev" if settings.jev_api_key else "mock", settings)
 
 
-register_left("jev", _jev, summary="TypeSafe AI's hosted Jev · key: JEV_API_KEY")
+register_left(
+    "jev",
+    _jev,
+    summary="TypeSafe AI's hosted Jev · key: JEV_API_KEY",
+    base_url=JEV_BASE_URL,
+    api_key_env="JEV_API_KEY",
+    settings=("JEV_API_KEY", "JEV_MODEL", "JEV_BASE_URL", "JEV_TIMEOUT_S"),
+)
 register_left(
     "ollama",
     _system_one("ollama", OLLAMA, "autotrust-jev"),
     summary=f"a decision model served by Ollama · {OLLAMA}/v1/systemone · no key · set LEFT_MODEL",
+    base_url=OLLAMA,
+    settings=("LEFT_MODEL", "LEFT_BASE_URL", "LEFT_TIMEOUT_S"),
 )
 register_left(
     "systemone",
     _system_one("systemone", None, "the one your server offers"),
     summary="any server that implements /v1/systemone · set LEFT_BASE_URL and LEFT_MODEL",
+    settings=("LEFT_BASE_URL", "LEFT_MODEL", "LEFT_API_KEY", "LEFT_TIMEOUT_S"),
 )
 register_left(
     "llm-experimental",
     _llm_experimental,
     summary=f"EXPERIMENTAL, not calibrated · a chat model read through token log-probabilities · {OLLAMA}/v1 · set LEFT_MODEL",
+    base_url=f"{OLLAMA}/v1",
+    settings=("LEFT_MODEL", "LEFT_BASE_URL", "LEFT_API_KEY", "LEFT_REASONING_EFFORT", "LEFT_TIMEOUT_S"),
+    experimental=True,
 )
 register_left("mock", _mock, summary="offline stand-in · no network, not calibrated")
 register_left("auto", _auto, summary="jev if JEV_API_KEY is set, otherwise mock")

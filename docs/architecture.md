@@ -191,6 +191,14 @@ left is for.
 further gates to the same pass. Every answer is kept on `StepRecord.left`. To let a new
 answer affect who commits, override `_gate` too.
 
+**Interfaces.** Pass `on_event=` to `Harness` to receive every `TraceEvent` as it
+happens. `summary` and `details` are text for a terminal, which is what `TracePrinter`
+prints. `data` carries the same event as JSON-ready structures: the plan, the proposal
+and the left's authority, the full `Decision` with its probabilities and permits, the
+evaluation, the action and the reintegration. The web UI (`src/hemisphere_harness/web/`)
+is built on this alone. It streams events to the browser over server-sent events and
+draws them from `data`. It does not reach into the harness.
+
 **Human in the loop.** On `needs_human`, `result.state.history[-1]` holds the proposal,
 the left's verdict and the right's recommendation. To continue after sign-off, either
 start a new run with the human's decision in `context`, or drive `Harness.step` yourself
