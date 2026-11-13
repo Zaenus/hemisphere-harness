@@ -15,7 +15,8 @@ The test suite makes no network calls and needs no credentials. Please keep it t
 test HTTP clients against `httpx.MockTransport`, as `tests/test_jev_client.py` and
 `tests/test_right_openai_compatible.py` do.
 
-Types are checked with `mypy --strict src`.
+Types are checked with `mypy --strict src`. CI runs the tests, the type check and the
+offline example on Python 3.11 to 3.14 for every pull request, so run them locally first.
 
 ## Adding a provider
 

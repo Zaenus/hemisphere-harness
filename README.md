@@ -305,6 +305,9 @@ The suite covers the decision and reintegration flow, the Jev client and the
 OpenAI-compatible client against mock HTTP transports, the offline mock, settings, and
 the example itself.
 
+GitHub Actions runs the tests, `mypy --strict src` and the offline example on Python 3.11
+to 3.14 for every push to `main` and every pull request. None of it needs credentials.
+
 ## Layout
 
 ```text
@@ -332,6 +335,7 @@ src/hemisphere_harness/
 tests/
 docs/architecture.md        the contract in detail, and where to extend
 docs/providers.md           using and adding providers
+.github/workflows/ci.yml    tests, types and the example, on every push and pull request
 CONTRIBUTING.md
 LICENSE                     MIT
 ```
