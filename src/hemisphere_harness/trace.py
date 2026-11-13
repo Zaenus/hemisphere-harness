@@ -27,6 +27,9 @@ class TraceEvent(BaseModel):
     data: dict[str, Any] = Field(default_factory=dict)
     """The same event as structured data (the proposal, the decision, ...), for interfaces
     that draw it rather than print it. JSON-ready. The printer ignores it."""
+    transient: bool = False
+    """A live update, such as a piece of the answer as it is written. Passed to the sink as
+    it happens, never kept in the trace."""
 
 
 EventSink = Callable[[TraceEvent], None]
@@ -55,6 +58,16 @@ class Trace:
         if self._sink is not None:
             self._sink(event)
 
+    @property
+    def listening(self) -> bool:
+        """Whether anyone receives events as they happen."""
+        return self._sink is not None
+
+    def emit_transient(self, actor: Actor, phase: str, data: dict[str, Any]) -> None:
+        """Pass a live update to the sink without keeping it."""
+        if self._sink is not None:
+            self._sink(TraceEvent(actor=actor, phase=phase, summary="", data=data, transient=True))
+
 
 class TracePrinter:
     """An event sink that prints an aligned transcript, coloured by actor on a terminal."""
@@ -73,6 +86,8 @@ class TracePrinter:
         self._step: int | None = None
 
     def __call__(self, event: TraceEvent) -> None:
+        if event.transient:
+            return  # the printer shows the finished answer, not its pieces
         if event.step is not None and event.step != self._step:
             self._step = event.step
             rule = f"── step {event.step} "

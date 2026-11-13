@@ -1,7 +1,9 @@
 """The Master's contract."""
 
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator
 
+from ..memory import Memo
 from ..schemas import (
     Claim,
     ClaimCheck,
@@ -61,11 +63,26 @@ class RightHemisphere(ABC):
     async def generate(self, prompt: str, state: WorldState | None = None) -> str:
         """Free-form text. Anything the agent says in its own words comes from here."""
 
+    async def stream(self, prompt: str, state: WorldState | None = None) -> AsyncIterator[str]:
+        """Like `generate`, but yields the text in pieces as it is written.
+
+        Not abstract: the default yields `generate`'s whole result as one piece.
+        """
+        yield await self.generate(prompt, state)
+
     async def claims(self, answer: str, state: WorldState) -> list[Claim]:
         """The factual claims in a draft answer that are worth checking.
 
         Each claim must make sense on its own, because the left checks it without seeing
         the draft. Not abstract: the default lists none, which skips the check.
+        """
+        return []
+
+    async def remember(self, answer: str, state: WorldState) -> "list[Memo]":
+        """What, if anything, from this run is worth remembering in later conversations, and of
+        what kind: a preference (always recalled) or a fact (recalled when relevant).
+
+        Not abstract: the default remembers nothing.
         """
         return []
 

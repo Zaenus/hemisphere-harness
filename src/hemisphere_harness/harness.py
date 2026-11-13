@@ -51,6 +51,9 @@ from .schemas import (
     Verdict,
     WorldState,
 )
+from .lookup import Searcher
+from .memory import MemoryStore, Note
+from .tools import Toolbox, ToolSpec
 from .trace import Actor, EventSink, Trace
 
 Actuator = Callable[[Option, WorldState], Awaitable[str]]
@@ -59,6 +62,9 @@ Actuator = Callable[[Option, WorldState], Awaitable[str]]
 SELECT = "select"
 PERMIT = "permit:"
 CLAIM = "claim:"
+RECALL = "recall:"
+MAX_RECALL_CANDIDATES = 40
+MAX_RECALLED_WITHOUT_LEFT = 5
 MAX_EARLIER = 4  # earlier messages from the person shown to the claim check
 
 ANSWER_PROMPT = """\
@@ -104,20 +110,32 @@ class Harness:
         config: HarnessConfig | None = None,
         act: Actuator = dry_run,
         on_event: EventSink | None = None,
+        toolbox: Toolbox | None = None,
+        searcher: Searcher | None = None,
+        memory: MemoryStore | None = None,
     ) -> None:
         self.right = right
         self.left = left
         self.config = config or HarnessConfig()
         self._actuator = act
         self._on_event = on_event
+        self.toolbox = toolbox
+        """Tools the right may build options on. An option that calls one is carried out
+        by calling it; `act` handles every option that does not."""
+        self.searcher = searcher
+        """Where the answer check looks up claims the left is unsure of. None: no lookups."""
+        self.memory = memory
+        """Notes kept across conversations. None: the agent remembers nothing between them."""
 
     async def run(self, goal: str, *, context: str = "", conversation: Sequence[Turn] = ()) -> RunResult:
         """Pursue `goal` until the right judges it met, a human is needed, or steps run out.
 
         `conversation` holds the earlier exchanges when `goal` is a reply. See Conversation.
         """
-        state = WorldState(goal=goal, context=context, conversation=list(conversation))
+        state = WorldState(goal=goal, context=context, conversation=list(conversation), tools=self._tools())
         trace = Trace(self._on_event)
+        if self.memory is not None:
+            state.memory = await self._recall(state, trace)
 
         plan = await self.right.plan(state)
         state.situation, state.plan = plan.situation, plan.steps
@@ -144,6 +162,7 @@ class Harness:
         if last is None or last.decision.outcome is not Outcome.FLAG_HUMAN:
             raise ValueError("this run is not waiting for a human")
         state = state.model_copy(deep=True)
+        state.tools = self._tools()  # the tools connected now, which may differ from before
         trace = Trace(self._on_event)
         index = len(state.history) + 1
         note = decision.note.strip()
@@ -198,11 +217,13 @@ class Harness:
         # The run ends where McGilchrist's cycle does: back in the right, which speaks for
         # the whole. The reply is the agent's settled view, in one voice. Before the person
         # sees it, the left checks its claims and the right takes back what does not hold.
-        draft = await self.right.generate(answer_prompt(status, state), state)
+        draft = await self._draft(answer_prompt(status, state), state, trace)
         report, check = draft, None
         if self.config.check_answers:
             report, check = await self.check_answer(draft, state, trace)
         trace.emit(Actor.RIGHT, "report", report, data={"report": report})
+        if self.memory is not None:
+            await self._remember(report, state, trace)
         trace.emit(
             Actor.HARNESS,
             "end",
@@ -249,6 +270,8 @@ class Harness:
                 ClaimCheck(claim=claim, probability=answer.probability, verdict=self._claim_verdict(answer.probability))
             )
         latency = f", {result.latency_ms:.0f} ms" if result.latency_ms is not None else ""
+        if self.searcher is not None and any(check.verdict is not ClaimVerdict.HOLDS for check in checks):
+            checks = await self._look_up(checks, state, trace)
         weak = [check for check in checks if check.verdict is not ClaimVerdict.HOLDS]
         trace.emit(
             Actor.LEFT,
@@ -257,6 +280,7 @@ class Harness:
             *(f"{check.probability:.2f} {check.verdict}: {check.claim.text}" for check in checks),
             data={
                 "checks": [check.model_dump(mode="json") for check in checks],
+                "looked_up": self.searcher.name if self.searcher is not None else None,
                 "model": result.model or self.left.name,
                 "latency_ms": result.latency_ms,
                 "thresholds": {"holds": self.config.permit_yes_threshold, "doubtful": self.config.permit_no_threshold},
@@ -279,6 +303,141 @@ class Harness:
         )
         return revised, AnswerCheck(draft=draft, checks=checks, revised=True)
 
+    async def _recall(self, state: WorldState, trace: Trace) -> list[str]:
+        """The saved notes that bear on this request, as the left judges them.
+
+        The left is asked one yes/no question per note: exactly the narrow, typed judgement it
+        is for. If it fails, the most recent notes are used instead.
+        """
+        assert self.memory is not None
+        saved = self.memory.notes
+        if not saved:
+            return []
+        # A preference is about how to work with the person, so it always applies. Only facts
+        # are put to the left, which judges each against the request.
+        preferences = [note for note in saved if note.kind == "preference"]
+        notes = [note for note in saved if note.kind != "preference"][-MAX_RECALL_CANDIDATES:]
+        relevant, how = await self._recall_facts(state, notes) if notes else ([], "")
+        recalled = preferences + relevant
+        trace.emit(
+            Actor.LEFT,
+            "recall",
+            f"recalled {len(preferences)} preference(s) and {len(relevant)} of {len(notes)} fact(s)" + (f": {how}" if how else ""),
+            *(f"• {note.text}" for note in recalled),
+            data={"recalled": [n.model_dump(mode="json") for n in recalled], "considered": len(notes), "preferences": len(preferences)},
+        )
+        return [note.text for note in recalled]
+
+    async def _recall_facts(self, state: WorldState, notes: "list[Note]") -> "tuple[list[Note], str]":
+        questions: dict[str, Question] = {
+            RECALL + note.id: NoulQuestion(
+                instructions=f"Would this note about the person help with their request?\nNote: {note.text}",
+                yes_when="It bears on what they are asking or how they want it answered.",
+                no_when="It is about something else.",
+            )
+            for note in notes
+        }
+        view: dict[str, Any] = {"request": state.goal}
+        if state.conversation:
+            view["previous_message"] = state.conversation[-1].request
+        try:
+            result = await self.left.decide(view, questions)
+            relevant = [
+                note for note in notes
+                if (answer := result.answers[RECALL + note.id]) and isinstance(answer, NoulAnswer) and answer.probability > 0.5
+            ]  # fmt: skip
+            how = "the left judged them relevant"
+        except LeftHemisphereError:
+            relevant = notes[-MAX_RECALLED_WITHOUT_LEFT:]
+            how = "the left was unavailable, so the most recent were used"
+        return relevant, how
+
+    async def _remember(self, answer: str, state: WorldState, trace: Trace) -> None:
+        """Let the right keep what is worth keeping. Best-effort: a failure keeps nothing."""
+        assert self.memory is not None
+        try:
+            texts = await self.right.remember(answer, state)
+        except RightHemisphereError:
+            return
+        added = self.memory.add(texts, source=state.goal)
+        if added:
+            trace.emit(
+                Actor.RIGHT,
+                "remember",
+                f"remembered {len(added)} note(s) for later conversations",
+                *(f"• {note.text}" for note in added),
+                data={"notes": [n.model_dump(mode="json") for n in added]},
+            )
+
+    async def _look_up(self, checks: list[ClaimCheck], state: WorldState, trace: Trace) -> list[ClaimCheck]:
+        """Search for evidence on the claims the left was not sure of, and let it judge them again.
+
+        Best-effort: a failed search finds nothing, a failed second pass keeps the first.
+        """
+        assert self.searcher is not None
+        unsure = [check for check in checks if check.verdict is not ClaimVerdict.HOLDS]
+        found = await self.searcher.search_all([check.claim.query or check.claim.text for check in unsure])
+        evidence = {check.claim.id: sources for check, sources in zip(unsure, found, strict=True) if sources}
+        trace.emit(
+            Actor.HARNESS,
+            "lookup",
+            f"looked up {len(unsure)} claim(s) on {self.searcher.name}; found evidence for {len(evidence)}",
+            *(f"{check.claim.text} → {', '.join(s.title for s in sources) or 'nothing'}" for check, sources in zip(unsure, found, strict=True)),
+            data={
+                "source": self.searcher.name,
+                "results": [
+                    {"claim": check.claim.model_dump(mode="json"), "sources": [s.model_dump(mode="json") for s in sources]}
+                    for check, sources in zip(unsure, found, strict=True)
+                ],
+            },
+        )
+        if not evidence:
+            return checks
+
+        focus = self._check_focus(state)
+        focus["evidence"] = {
+            claim_id: [{"source": f"{s.title} ({s.url})", "text": s.snippet} for s in sources] for claim_id, sources in evidence.items()
+        }
+        rechecked = [check for check in unsure if check.claim.id in evidence]
+        questions = self._claim_questions([check.claim for check in rechecked], with_evidence=True)
+        try:
+            result = await self.left.decide(focus, questions)
+        except LeftHemisphereError:
+            return checks
+        updated = {}
+        for check in rechecked:
+            answer = result.answers[CLAIM + check.claim.id]
+            assert isinstance(answer, NoulAnswer)
+            updated[check.claim.id] = check.model_copy(
+                update={
+                    "probability": answer.probability,
+                    "verdict": self._claim_verdict(answer.probability),
+                    "first_probability": check.probability,
+                    "sources": evidence[check.claim.id],
+                }
+            )
+        return [updated.get(check.claim.id, check) for check in checks]
+
+    async def _draft(self, prompt: str, state: WorldState, trace: Trace) -> str:
+        """The answer's first draft, streamed to whoever is listening as it is written.
+
+        If streaming fails part of the way, the pieces are withdrawn and the draft is
+        generated again in one go.
+        """
+        if not trace.listening:
+            return await self.right.generate(prompt, state)
+        pieces: list[str] = []
+        try:
+            async for piece in self.right.stream(prompt, state):
+                pieces.append(piece)
+                trace.emit_transient(Actor.RIGHT, "answer_delta", {"text": piece})
+            if "".join(pieces).strip():
+                return "".join(pieces)
+        except RightHemisphereError:
+            pass
+        trace.emit_transient(Actor.RIGHT, "answer_delta", {"reset": True})
+        return await self.right.generate(prompt, state)
+
     def _check_focus(self, state: WorldState) -> dict[str, Any]:
         view: dict[str, Any] = {"request": state.goal}
         if state.context:
@@ -286,15 +445,20 @@ class Harness:
         if state.conversation:
             # What the person said earlier may hold facts; what the agent answered is not evidence.
             view["earlier_messages"] = [turn.request for turn in state.conversation[-MAX_EARLIER:]]
+        if observed := state.observations():
+            view["tool_results"] = observed  # observed, not asserted: evidence
         return view
 
-    def _claim_questions(self, claims: list[Claim]) -> dict[str, Question]:
+    def _claim_questions(self, claims: list[Claim], *, with_evidence: bool = False) -> dict[str, Question]:
+        basis = (
+            "Judge it first on the evidence found for it (under evidence, keyed by the statement's id "
+            "'{id}'), then on the context given and what the tools returned."
+            if with_evidence
+            else "Judge it on the context given, on what the tools returned, and on well-established general knowledge."
+        )
         return {
             CLAIM + claim.id: NoulQuestion(
-                instructions=(
-                    "Is this statement accurate? Judge it on the context given and on well-established "
-                    f"general knowledge.\nStatement: {claim.text}"
-                ),
+                instructions=f"Is this statement accurate? {basis.format(id=claim.id)}\nStatement: {claim.text}",
                 yes_when="The statement is accurate, or a fair summary of what is well established.",
                 no_when="The statement is false, exaggerated, out of date, or not supported.",
             )
@@ -335,7 +499,7 @@ class Harness:
             left = await self.left.decide(state.focus(), self.build_questions(state, proposal))
         except LeftHemisphereError as exc:
             failure = str(exc)
-        decision = self._gate(authority, left, failure)
+        decision = self._gate(authority, left, failure, proposal)
         self._trace_left(trace, index, left, decision, failure)
         self._trace_gate(trace, index, decision)
 
@@ -420,7 +584,7 @@ class Harness:
                     instructions=(
                         f"Policy: {self.config.policy}\n"
                         "Under this policy, may the following action be carried out without "
-                        f"human sign-off?\nAction: {option.description}"
+                        f"human sign-off?\nAction: {option.as_action()}"
                     )
                 )
         return questions
@@ -431,7 +595,9 @@ class Harness:
             return Authority.ADVISE
         return Authority.DECIDE
 
-    def _gate(self, authority: Authority, left: LeftResult | None, failure: str) -> Decision:
+    def _gate(
+        self, authority: Authority, left: LeftResult | None, failure: str, proposal: Proposal | None = None
+    ) -> Decision:
         """The only place a left verdict can become a commitment.
 
         The left commits when all of these hold: the right marked the decision routine
@@ -466,6 +632,9 @@ class Harness:
         if permit is not None and permit < config.permit_yes_threshold:
             stance = "refuses" if permit <= config.permit_no_threshold else "is unsure about"
             reasons.append(f"the policy gate {stance} '{select.choice}' (p={permit:.2f})")
+        tool = self._tool_needing_signoff(proposal.option(select.choice) if proposal else None)
+        if tool:
+            reasons.append(f"'{select.choice}' calls {tool}, which needs a person's sign-off")
 
         committed = not reasons
         return Decision(
@@ -504,6 +673,8 @@ class Harness:
                 f"the right chose '{evaluation.option_id}', but policy requires "
                 f"human sign-off for it (p={decision.permits[evaluation.option_id or '']:.2f})"
             )
+        elif tool := self._tool_needing_signoff(proposal.option(evaluation.option_id)):
+            reason = f"the right chose '{evaluation.option_id}', which calls {tool}: that needs a person's sign-off"
         else:
             outcome = Outcome.PROCEED
             option_id = evaluation.option_id
@@ -518,11 +689,29 @@ class Harness:
         )
 
     async def _act(self, option: Option, state: WorldState) -> ActionResult:
+        if option.tool:
+            if self.toolbox is None:
+                return ActionResult(option_id=option.id, ok=False, output="no tools are connected", tool=option.tool)
+            result = await self.toolbox.call(option.tool, option.arguments)
+            return ActionResult(option_id=option.id, ok=result.ok, output=result.output, tool=option.tool)
         try:
             output = await self._actuator(option, state)
         except Exception as exc:  # a failed action is information for the right, not a crash
             return ActionResult(option_id=option.id, ok=False, output=f"{type(exc).__name__}: {exc}")
         return ActionResult(option_id=option.id, ok=True, output=output)
+
+    def _tools(self) -> list[ToolSpec]:
+        return list(self.toolbox.tools) if self.toolbox else []
+
+    def _tool_needing_signoff(self, option: Option | None) -> str | None:
+        """The tool an option calls, if that tool may only run with a person's sign-off.
+
+        A tool the harness does not know counts as needing it: better to ask than to guess.
+        """
+        if option is None or not option.tool:
+            return None
+        spec = self.toolbox.get(option.tool) if self.toolbox else None
+        return option.tool if spec is None or spec.needs_approval else None
 
     def _trace_left(
         self, trace: Trace, index: int, left: LeftResult | None, decision: Decision, failure: str
@@ -599,7 +788,14 @@ def answer_prompt(status: RunStatus, state: WorldState) -> str:
             pending = option.description
         else:
             pending = "a choice between: " + "; ".join(o.description for o in last.proposal.options)
-    return ANSWER_PROMPT.format(ending=_ENDINGS[status].format(pending=pending))
+    ending = _ENDINGS[status].format(pending=pending)
+    if state.memory:
+        # Recalled notes are background for every step; here they are a standing instruction.
+        ending += (
+            "\n- Follow what you remember about this person, above all how they like to be "
+            "answered. It overrides the format suggested above."
+        )
+    return ANSWER_PROMPT.format(ending=ending)
 
 
 def _distribution(probabilities: dict[str, float], *, ranked: bool = True) -> str:

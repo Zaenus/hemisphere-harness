@@ -36,6 +36,7 @@ from .. import __version__
 from ..config import Settings
 from ..errors import ConfigError, HarnessError
 from ..left import ExperimentalLLMLeft, MockLeftHemisphere
+from ..mcp_tools import toolbox_from_settings
 from ..providers import OLLAMA, build_left, build_right, left_providers, right_providers
 from ..right import LLMRightHemisphere
 from ..schemas import ChoiceAnswer, ChoiceQuestion
@@ -66,6 +67,8 @@ class WebConfig:
     port: int = 8765
     transport: httpx.AsyncBaseTransport | None = None
     """For tests: where outbound HTTP (model listing) goes."""
+    demo_pace_s: float = 0.6
+    """How long each step of an offline demo takes, so it can be watched. 0 for tests."""
 
     @property
     def cookie(self) -> str:
@@ -152,7 +155,7 @@ def create_app(config: WebConfig) -> Starlette:
     def settings() -> Settings:
         return Settings(_env_file=config.env_file)
 
-    manager = RunManager(store, settings)
+    manager = RunManager(store, settings, demo_pace_s=config.demo_pace_s)
 
     @asynccontextmanager
     async def lifespan(app: Starlette) -> AsyncIterator[None]:
@@ -228,6 +231,7 @@ def create_app(config: WebConfig) -> Starlette:
             "left": left,
             "policy": current.harness_policy,
             "max_steps": current.harness_max_steps,
+            "tools_config": current.harness_mcp_config,
         }
 
     async def get_settings(request: Request) -> dict[str, Any]:
@@ -250,7 +254,7 @@ def create_app(config: WebConfig) -> Starlette:
         return {
             "env_file": str(config.env_file),
             "fields": [
-                {"name": f.name, "label": f.label, "kind": f.kind, "help": f.help, **values[f.name]}
+                {"name": f.name, "label": f.label, "kind": f.kind, "help": f.help, "choices": list(f.choices), **values[f.name]}
                 for f in envfile.FIELDS
             ],
             "right_providers": describe(right_providers),
@@ -330,6 +334,35 @@ def create_app(config: WebConfig) -> Starlette:
             }
         raise ApiError("hemisphere must be 'right' or 'left'.")
 
+    async def list_tools(request: Request) -> dict[str, Any]:
+        """Connect to the configured MCP servers, list their tools, and disconnect."""
+        path = settings().harness_mcp_config
+        toolbox = await toolbox_from_settings(path, log_dir=config.data_dir)
+        if toolbox is None:
+            return {"config": None, "tools": [], "errors": {}}
+        try:
+            return {"config": path, "tools": [tool.model_dump(mode="json") for tool in toolbox.tools], "errors": toolbox.errors}
+        finally:
+            await toolbox.aclose()
+
+    async def get_memory(request: Request) -> dict[str, Any]:
+        current = settings()
+        store = manager.memory(current)
+        return {
+            "enabled": current.harness_memory,
+            "path": str(store.path),
+            "notes": [note.model_dump(mode="json") for note in reversed(store.notes)],
+        }
+
+    async def forget_note(request: Request) -> dict[str, Any]:
+        if not manager.memory().delete(request.path_params["note_id"]):
+            raise ApiError("No such note.", 404)
+        return {"deleted": request.path_params["note_id"]}
+
+    async def forget_all(request: Request) -> dict[str, Any]:
+        manager.memory().clear()
+        return {"cleared": True}
+
     # --- Runs --------------------------------------------------------------------------------
 
     def find(request: Request) -> Any:
@@ -395,7 +428,10 @@ def create_app(config: WebConfig) -> Starlette:
         async def stream() -> AsyncIterator[str]:
             yield "retry: 2000\n\n"
             async for index, event in manager.events(run.id, after):
-                yield f"id: {index}\nevent: trace\ndata: {event.model_dump_json()}\n\n"
+                if index is None:  # a piece of the answer as it is written: no id, not replayed
+                    yield f"event: delta\ndata: {json.dumps(event.data)}\n\n"
+                else:
+                    yield f"id: {index}\nevent: trace\ndata: {event.model_dump_json()}\n\n"
             final = store.runs.get(run.id)
             if final is not None:
                 summary = final.model_dump(mode="json", include={"id", "status", "error", "report", "finished"})
@@ -412,6 +448,10 @@ def create_app(config: WebConfig) -> Starlette:
         Route("/api/settings", endpoint(put_settings), methods=["PUT"]),
         Route("/api/models", endpoint(list_models), methods=["POST"]),
         Route("/api/check", endpoint(check), methods=["POST"]),
+        Route("/api/tools", endpoint(list_tools), methods=["GET"]),
+        Route("/api/memory", endpoint(get_memory), methods=["GET"]),
+        Route("/api/memory", endpoint(forget_all), methods=["DELETE"]),
+        Route("/api/memory/{note_id}", endpoint(forget_note), methods=["DELETE"]),
         Route("/api/runs", endpoint(list_runs), methods=["GET"]),
         Route("/api/runs", endpoint(start_run), methods=["POST"]),
         Route("/api/runs/{run_id}", endpoint(get_run), methods=["GET"]),
@@ -444,6 +484,8 @@ async def _right_models(
     client: httpx.AsyncClient, settings: Settings, provider_name: str, base_url: str | None, api_key: str | None
 ) -> list[dict[str, Any]]:
     provider = right_providers.get(provider_name)
+    if provider.name == "anthropic":
+        return await _anthropic_models(settings, api_key)
     home = provider.base_url
     url = base_url or settings.right_base_url or home
     if not url:
@@ -453,6 +495,23 @@ async def _right_models(
     if key is None and provider.api_key_env and home and url.rstrip("/") == home.rstrip("/"):
         key = settings.env(provider.api_key_env)
     return await _openai_models(client, url, key)
+
+
+async def _anthropic_models(settings: Settings, api_key: str | None) -> list[dict[str, Any]]:
+    """Claude's models, from Anthropic's Models API through its SDK."""
+    try:
+        import anthropic
+    except ImportError:
+        raise ApiError('Claude needs the "anthropic" extra: pip install "hemisphere-harness[anthropic]"') from None
+    key = api_key or (settings.right_api_key.get_secret_value() if settings.right_api_key else settings.env("ANTHROPIC_API_KEY"))
+    client = anthropic.AsyncAnthropic(api_key=key, timeout=20.0)
+    try:
+        listed = [model.id async for model in client.models.list()]
+    except anthropic.APIError as exc:
+        raise ApiError(f"Anthropic's model list failed: {exc}", 502) from None
+    finally:
+        await client.close()
+    return [{"id": model_id} for model_id in listed]
 
 
 async def _left_models(

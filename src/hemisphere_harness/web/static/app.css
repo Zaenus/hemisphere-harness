@@ -394,6 +394,19 @@ details.more.small > summary { font-size: 13px; }
 .net .neuron.human.approved circle { fill: var(--ok); }
 .net .neuron.human.rejected circle { fill: var(--danger); }
 
+.tool-call { margin-left: 8px; }
+.tool-args { display: block; margin-top: 4px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.tool-list { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
+.tool-row { display: grid; grid-template-columns: auto auto 1fr; gap: 4px 10px; align-items: center; font-size: 13.5px; }
+.tool-row .faint { grid-column: 1 / -1; }
+.notice.spaced { margin-top: 10px; }
+.sources { font-size: 12.5px; color: var(--muted); }
+.small-note { font-size: 12.5px; }
+.examples { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.note-row { display: flex; gap: 12px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); font-size: 14px; }
+.live-note { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 13px; color: var(--muted); }
+.live-note .dot { margin-top: 0; }
+
 /* ---------- The run as a network ---------- */
 
 .network {

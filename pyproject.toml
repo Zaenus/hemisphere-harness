@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "hemisphere-harness"
-version = "0.1.1"
+version = "0.2.0"
 description = "An agent harness modelled on McGilchrist's Master and Emissary: a generative right hemisphere leads, a calibrated decision model serves."
 readme = "README.md"
 license = "MIT"
@@ -41,8 +41,14 @@ web = [
     "starlette>=0.40",
     "uvicorn>=0.30",
 ]
+mcp = [
+    "mcp>=2.3,<3",
+]
+anthropic = [
+    "anthropic>=2.8,<3",
+]
 dev = [
-    "hemisphere-harness[web]",
+    "hemisphere-harness[web,mcp,anthropic]",
     "pytest>=8",
     "pytest-asyncio>=0.24",
     "mypy>=1.10",

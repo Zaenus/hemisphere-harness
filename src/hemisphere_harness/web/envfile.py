@@ -52,6 +52,9 @@ FIELDS: tuple[Field, ...] = (
     Field("NVIDIA_API_KEY", "NVIDIA API key", "secret"),
     Field("XAI_API_KEY", "xAI API key", "secret"),
     Field("OPENROUTER_API_KEY", "OpenRouter API key", "secret"),
+    Field("ANTHROPIC_API_KEY", "Anthropic API key", "secret"),
+    Field("GEMINI_API_KEY", "Gemini API key", "secret"),
+    Field("RIGHT_EFFORT", "Effort", "choice", choices=("", "low", "medium", "high", "xhigh", "max"), help="For Claude: how hard the model works. Higher is slower and costs more; empty uses the model's default."),
     # Left hemisphere.
     Field("LEFT_PROVIDER", "Provider", "provider"),
     Field("LEFT_MODEL", "Model", help="For Ollama, a decision model: ollama show <model> lists \"decision\" under Capabilities."),
@@ -69,6 +72,13 @@ FIELDS: tuple[Field, ...] = (
     Field("HARNESS_PERMIT_NO_THRESHOLD", "Policy: refused at or below", "number", help="Only a human can approve an option the policy gate refuses."),
     Field("HARNESS_MAX_STEPS", "Maximum steps", "number"),
     Field("HARNESS_POLICY", "Operator policy", "longtext", help="Plain language. Leave empty to turn the policy gate off."),
+    Field("HARNESS_LOOKUP", "Look claims up", "choice", choices=("", "wikipedia", "searxng", "brave"), help="Where the answer check looks up claims the left is unsure of. Off by default: it sends those claims to that service."),
+    Field("HARNESS_LOOKUP_URL", "SearXNG address", help="For searxng: your instance, e.g. http://localhost:8888. Its JSON format must be enabled."),
+    Field("HARNESS_LOOKUP_LANGUAGE", "Wikipedia language", help="For wikipedia: en, de, pt, …"),
+    Field("BRAVE_API_KEY", "Brave Search API key", "secret"),
+    Field("HARNESS_MEMORY", "Remember across conversations", "bool", help="The right keeps short notes worth remembering; the left recalls the ones that bear on each new request. Stored only on this machine."),
+    Field("HARNESS_MEMORY_FILE", "Memory file", help="Where the notes are kept. Default: memory.json next to the run history."),
+    Field("HARNESS_MCP_CONFIG", "MCP servers file", help="A JSON file in the usual mcpServers format. Its tools become available to runs. Edit the file itself to add servers."),
     Field("HARNESS_CHECK_ANSWERS", "Check answers before showing them", "bool", help="The left judges each factual claim in the answer; the right revises those that do not hold. Off when the left is the mock."),
 )  # fmt: skip
 
@@ -129,6 +139,11 @@ def write(path: Path, changes: dict[str, str | None]) -> None:
             # python-dotenv expands ${...} even inside quotes, so it would not read back as written.
             raise ConfigError(f"{name}: a .env file cannot hold '${{' literally. Rephrase the value without it.")
         cleaned[name] = value or None
+
+    for name, value in cleaned.items():
+        field = FIELDS_BY_NAME[name]
+        if field.kind == "choice" and value is not None and value not in field.choices:
+            raise ConfigError(f"{name}: choose one of {', '.join(c for c in field.choices if c)}, or leave it empty.")
 
     for name in ("RIGHT_PROVIDER", "LEFT_PROVIDER"):
         if cleaned.get(name):

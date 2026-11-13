@@ -65,6 +65,7 @@ def use(env, **variables: str) -> Settings:
         ("openai", "OPENAI_API_KEY", "https://api.openai.com/v1/chat/completions"),
         ("nvidia", "NVIDIA_API_KEY", "https://integrate.api.nvidia.com/v1/chat/completions"),
         ("xai", "XAI_API_KEY", "https://api.x.ai/v1/chat/completions"),
+        ("gemini", "GEMINI_API_KEY", "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"),
         ("grok", "XAI_API_KEY", "https://api.x.ai/v1/chat/completions"),
         ("openrouter", "OPENROUTER_API_KEY", "https://openrouter.ai/api/v1/chat/completions"),
         ("NVIDIA", "NVIDIA_API_KEY", "https://integrate.api.nvidia.com/v1/chat/completions"),

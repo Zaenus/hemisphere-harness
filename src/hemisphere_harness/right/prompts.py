@@ -5,8 +5,11 @@ return. The instances are built from the real schemas, so a prompt cannot drift 
 type it asks for.
 """
 
+import json
+
 from pydantic import BaseModel
 
+from ..memory import Memo, Remembered
 from ..schemas import (
     Claim,
     ClaimCheck,
@@ -112,8 +115,19 @@ def propose_prompt(state: WorldState) -> str:
         ],
         shape=_PROPOSAL_SHAPE,
         note="If stakes are high or the decision is open-ended, the left's choice will come "
-        "back to you before anything is done.",
+        "back to you before anything is done." + (_TOOLS_NOTE if state.tools else ""),
     )
+
+
+_TOOLS_NOTE = (
+    "\n\nTOOLS: an option may call exactly one of the tools listed under TOOLS. Set its "
+    "\"tool\" to the tool's name and \"arguments\" to an object that fits the tool's "
+    "arguments. Then the description must say in plain words what the call will do, because "
+    "the left judges the option from its description. An option that is not a tool call, "
+    "such as answering the person or asking them something, leaves \"tool\" null. Only "
+    "use tools that are listed, and never invent their results: you will see what a tool "
+    "returned in the history."
+)
 
 
 def evaluate_prompt(state: WorldState, proposal: Proposal, decision: Decision) -> str:
@@ -182,8 +196,8 @@ MAX_CLAIMS = 8
 
 _CLAIMS_SHAPE = ClaimList(
     claims=[
-        Claim(text="A single factual statement from the reply, understandable on its own"),
-        Claim(text="Another one"),
+        Claim(text="A single factual statement from the reply, understandable on its own", query="three to eight search keywords"),
+        Claim(text="Another one", query="keywords for that one"),
     ]
 )
 
@@ -202,6 +216,8 @@ def claims_prompt(state: WorldState, answer: str) -> str:
             "without the rest of the reply: name what it is about instead of writing 'it' or 'this'.",
             "Leave out opinions, recommendations, hedged or obviously true statements, and anything "
             "about what you did during this task. If nothing qualifies, return an empty list.",
+            "query: for each claim, three to eight keywords a search engine or Wikipedia would need "
+            "to find evidence for or against it. Name the subject; leave out the numbers being checked.",
         ],
         shape=_CLAIMS_SHAPE,
     )
@@ -211,24 +227,55 @@ def revise_prompt(state: WorldState, answer: str, checks: list[ClaimCheck]) -> s
     lines = []
     for check in checks:
         lines.append(f"- [{check.verdict} {check.probability:.2f}] {check.claim.text}")
+        for source in check.sources:
+            lines.append(f"  evidence from {source.title} ({source.url}): {source.snippet}")
     return "\n\n".join(
         [
             _request(state),
             f"YOUR DRAFT REPLY\n{answer}",
             "INDEPENDENT CHECK OF ITS CLAIMS\n"
-            "Each claim was judged on its own, with only the request and its context, and given "
-            "a probability that it holds.\n" + "\n".join(lines),
+            "Each claim was judged on its own, with only the request, its context and what the "
+            "tools returned, and given a probability that it holds.\n" + "\n".join(lines),
             "TASK\nRewrite the reply in the light of this check. Correct a doubtful claim if you "
             "know the right fact; otherwise remove it, or say plainly that it is uncertain. Qualify "
             "an unsure claim. Keep claims that hold. The check is evidence, not the last word: if "
             "you are certain a doubted claim is right, you may keep it, stated carefully.\n"
             "Do not add specifics that were not in the draft: no new numbers, names, dates or "
             "sources. Nothing will check them. Prefer a vaguer true statement to a precise one you "
-            "are unsure of.\n"
+            "are unsure of. The one exception is evidence listed above: you may use what it says, "
+            "and name where it comes from.\n"
             "Keep the same voice and format: one agent, first person, answering the person "
             "directly. Do not mention the check, the claims, or any probabilities. Reply with the "
             "revised reply only.",
         ]
+    )
+
+
+MAX_NEW_NOTES = 3
+
+
+def remember_prompt(state: WorldState, answer: str) -> str:
+    return _task(
+        _request(state),
+        f"YOUR REPLY\n{answer}",
+        *([f"ALREADY REMEMBERED\n" + "\n".join(f"- {note}" for note in state.memory)] if state.memory else []),
+        task=(
+            "Decide whether anything from this exchange is worth remembering in later, separate "
+            "conversations with this person. Usually nothing is."
+        ),
+        fields=[
+            f"notes: at most {MAX_NEW_NOTES}, each a short, self-contained sentence. Keep only what will still "
+            "be true and useful later: the person's stated preferences, lasting facts about them or their "
+            "work, and decisions they made. Not the details of this one request, not anything you said "
+            "or did, nothing already remembered, and nothing sensitive (health, finances, passwords, "
+            "other people's private details). Return an empty list if nothing qualifies.",
+            'kind: "preference" for how they like to be answered or worked with, which applies to every '
+            'future request; "fact" for anything else, which matters only when a request touches it.',
+        ],
+        shape=Remembered(notes=[
+            Memo(text="The person prefers short answers with a bullet-point summary.", kind="preference"),
+            Memo(text="The person's team deploys on Fridays only.", kind="fact"),
+        ]),  # fmt: skip
     )
 
 
@@ -237,6 +284,8 @@ def _request(state: WorldState) -> str:
     if state.conversation:
         sections.append(f"CONVERSATION SO FAR (oldest first)\n{render_conversation(state)}")
     sections.append(f"REQUEST\n{state.goal}")
+    if observed := state.observations():
+        sections.append("WHAT TOOLS RETURNED\n" + "\n".join(f"- {line}" for line in observed))
     if state.context:
         sections.append(f"CONTEXT\n{state.context}")
     return "\n\n".join(sections)
@@ -273,15 +322,34 @@ def render_state(state: WorldState) -> str:
         sections.append(("SITUATION (your current reading)", state.situation))
     if state.plan:
         sections.append(("PLAN", "\n".join(f"{i}. {step}" for i, step in enumerate(state.plan, 1))))
+    if state.memory:
+        sections.append(("WHAT YOU REMEMBER FROM EARLIER CONVERSATIONS", "\n".join(f"- {note}" for note in state.memory)))
+    if state.tools:
+        sections.append(("TOOLS", _render_tools(state)))
     if state.history:
         sections.append(("HISTORY", "\n".join(f"- {step.summary()}" for step in state.history)))
     return "\n\n".join(f"{title}\n{body}" for title, body in sections)
 
 
+def _render_tools(state: WorldState) -> str:
+    lines = []
+    for tool in state.tools:
+        schema = json.dumps(_compact(tool.input_schema), separators=(",", ":"))
+        approval = "needs the person's sign-off" if tool.needs_approval else "may run without sign-off"
+        lines.append(f"- {tool.name}: {tool.description.strip() or '(no description)'}\n  arguments: {schema}\n  ({approval})")
+    return "\n".join(lines)
+
+
+def _compact(schema: object) -> object:
+    if isinstance(schema, dict):
+        return {key: _compact(value) for key, value in schema.items() if key != "title"}
+    return schema
+
+
 def _render_options(proposal: Proposal, decision: Decision) -> str:
     lines = ["Options:"]
     for option in proposal.options:
-        line = f"- {option.id}: {option.description}"
+        line = f"- {option.id}: {option.as_action()}"
         notes = []
         if option.id in decision.probabilities:
             notes.append(f"left p={decision.probabilities[option.id]:.2f}")

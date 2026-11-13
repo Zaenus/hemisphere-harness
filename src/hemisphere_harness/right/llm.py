@@ -2,6 +2,7 @@
 
 import json
 from abc import abstractmethod
+from collections.abc import AsyncIterator
 from typing import Any, TypeVar
 
 from pydantic import BaseModel
@@ -19,6 +20,7 @@ from ..schemas import (
     StepRecord,
     WorldState,
 )
+from ..memory import Memo, Remembered
 from . import prompts
 from .base import RightHemisphere
 
@@ -66,14 +68,30 @@ class LLMRightHemisphere(RightHemisphere):
         return await self._structured(Reintegration, prompts.reintegrate_prompt(state, step))
 
     async def generate(self, prompt: str, state: WorldState | None = None) -> str:
+        return await self.complete(self._free_text(prompt, state))
+
+    async def stream(self, prompt: str, state: WorldState | None = None) -> AsyncIterator[str]:
+        async for piece in self.complete_stream(self._free_text(prompt, state)):
+            yield piece
+
+    async def complete_stream(self, messages: list[ChatMessage]) -> AsyncIterator[str]:
+        """`complete`, in pieces as the model writes. Override where the API can stream.
+
+        The default yields the whole of `complete` as one piece.
+        """
+        yield await self.complete(messages)
+
+    def _free_text(self, prompt: str, state: WorldState | None) -> list[ChatMessage]:
         user = prompt if state is None else f"{prompts.render_state(state)}\n\n{prompt}"
-        return await self.complete(
-            [{"role": "system", "content": prompts.ROLE}, {"role": "user", "content": user}]
-        )
+        return [{"role": "system", "content": prompts.ROLE}, {"role": "user", "content": user}]
 
     async def claims(self, answer: str, state: WorldState) -> list[Claim]:
         listed = await self._structured(ClaimList, prompts.claims_prompt(state, answer))
         return listed.claims[: prompts.MAX_CLAIMS]
+
+    async def remember(self, answer: str, state: WorldState) -> list[Memo]:
+        kept = await self._structured(Remembered, prompts.remember_prompt(state, answer))
+        return kept.notes[: prompts.MAX_NEW_NOTES]
 
     async def revise(self, answer: str, checks: list[ClaimCheck], state: WorldState) -> str:
         return await self.complete(

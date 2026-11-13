@@ -235,6 +235,8 @@ register_openai_compatible("openai", "https://api.openai.com/v1", api_key_env="O
 register_openai_compatible("nvidia", "https://integrate.api.nvidia.com/v1", api_key_env="NVIDIA_API_KEY", aliases=("nim",))
 register_openai_compatible("xai", "https://api.x.ai/v1", api_key_env="XAI_API_KEY", aliases=("grok",))
 register_openai_compatible("openrouter", "https://openrouter.ai/api/v1", api_key_env="OPENROUTER_API_KEY")
+# Google's own OpenAI-compatible endpoint for Gemini.
+register_openai_compatible("gemini", "https://generativelanguage.googleapis.com/v1beta/openai", api_key_env="GEMINI_API_KEY", aliases=("google",))
 
 # Local servers, at their default ports. None of them needs a key.
 register_openai_compatible("ollama", "http://localhost:11434/v1")
@@ -243,6 +245,33 @@ register_openai_compatible("vllm", "http://localhost:8000/v1")
 register_openai_compatible("llamacpp", "http://localhost:8080/v1", aliases=("llama.cpp", "llama-cpp"))
 
 register_openai_compatible("openai-compatible", None, aliases=("custom",))
+
+
+def _anthropic(settings: Settings) -> RightHemisphere:
+    """Claude, through Anthropic's own SDK rather than an OpenAI-compatible shim."""
+    from .right.anthropic import AnthropicRight
+
+    if not settings.right_model:
+        raise ConfigError("RIGHT_PROVIDER=anthropic needs RIGHT_MODEL, e.g. claude-opus-5-5")
+    key = settings.right_api_key.get_secret_value() if settings.right_api_key else settings.env("ANTHROPIC_API_KEY")
+    return AnthropicRight(
+        settings.right_model,
+        api_key=key,
+        base_url=settings.right_base_url,
+        effort=settings.right_effort,
+        timeout_s=max(settings.right_timeout_s, 600.0),
+    )
+
+
+register_right(
+    "anthropic",
+    _anthropic,
+    summary="Claude, through Anthropic's SDK · key: ANTHROPIC_API_KEY or an `ant auth login` profile",
+    aliases=("claude",),
+    base_url="https://api.anthropic.com",
+    api_key_env="ANTHROPIC_API_KEY",
+    settings=("RIGHT_MODEL", "RIGHT_EFFORT", "RIGHT_API_KEY", "RIGHT_BASE_URL", "RIGHT_TIMEOUT_S"),
+)
 
 
 # --- Built-in left-hemisphere providers --------------------------------------------------

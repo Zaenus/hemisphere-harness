@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and ideas
+    url: https://github.com/Zaenus/hemisphere-harness/discussions
+    about: Ask how something works, or talk an idea through before opening an issue.

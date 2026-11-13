@@ -16,6 +16,7 @@ from typing import Annotated, Any, Literal, Self
 
 from pydantic import BaseModel, Field, model_validator
 
+from .tools import ToolSpec
 from .trace import TraceEvent
 
 MIN_OPTIONS = 2
@@ -183,6 +184,24 @@ class Option(BaseModel):
     id: str = Field(min_length=1)
     description: str
     rationale: str = ""
+    tool: str | None = None
+    """The tool this option calls, if it calls one. Without a tool, an option is carried
+    out by the harness's actuator (by default, a dry run)."""
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    """The tool's arguments, as its input schema asks for them."""
+
+    def as_action(self) -> str:
+        """The option as one line, with its tool call if it has one."""
+        if not self.tool:
+            return self.description
+        return f"{self.description} [calls the tool {self.tool} with {_arguments(self.arguments)}]"
+
+
+def _arguments(arguments: dict[str, Any]) -> str:
+    import json
+
+    text = json.dumps(arguments, ensure_ascii=False)
+    return text if len(text) <= 400 else text[:399] + "…"
 
 
 class Proposal(BaseModel):
@@ -256,6 +275,8 @@ class ActionResult(BaseModel):
     option_id: str
     ok: bool
     output: str
+    tool: str | None = None
+    """The tool that was called, if the option called one. None means the actuator ran."""
 
 
 class StepRecord(BaseModel):
@@ -273,7 +294,8 @@ class StepRecord(BaseModel):
         if self.action is not None:
             result = "done" if self.action.ok else "FAILED"
             who = "a human approved" if decision.committed_by == HUMAN else f"the {decision.committed_by} hemisphere chose"
-            return f"step {self.index}: {who} '{decision.option_id}' -> {result}: {self.action.output}"
+            called = f" (called {self.action.tool})" if self.action.tool else ""
+            return f"step {self.index}: {who} '{decision.option_id}'{called} -> {result}: {_clip(self.action.output, 1500)}"
         offered = ", ".join(option.id for option in self.proposal.options)
         why = self.evaluation.reasoning if self.evaluation else "; ".join(decision.reasons)
         if decision.outcome is Outcome.FLAG_HUMAN:
@@ -311,9 +333,26 @@ class WorldState(BaseModel):
     context: str = ""
     conversation: list[Turn] = Field(default_factory=list)
     """Earlier exchanges in the same conversation, oldest first."""
+    tools: list[ToolSpec] = Field(default_factory=list)
+    """The tools options may call. Shown to the right; the left sees only each option."""
+    memory: list[str] = Field(default_factory=list)
+    """Notes from earlier conversations that the left judged relevant. Shown to the right."""
     situation: str = ""
     plan: list[str] = Field(default_factory=list)
     history: list[StepRecord] = Field(default_factory=list)
+
+    def observations(self, limit: int = 6, chars: int = 800) -> list[str]:
+        """What tools returned in this run, most recent last.
+
+        Unlike anything the agent wrote, these were observed: they count as evidence when
+        the answer is checked.
+        """
+        seen = [
+            f"{step.action.tool} returned: {_clip(step.action.output, chars)}"
+            for step in self.history
+            if step.action is not None and step.action.tool and step.action.ok
+        ]
+        return seen[-limit:]
 
     def focus(self, recent: int = 3) -> dict[str, Any]:
         """The narrow slice handed to the left hemisphere.
@@ -351,6 +390,8 @@ class Claim(BaseModel):
 
     id: str = ""
     text: str = Field(min_length=1)
+    query: str = ""
+    """A short search query that would find evidence for or against it, for lookups."""
 
 
 class ClaimList(BaseModel):
@@ -359,11 +400,23 @@ class ClaimList(BaseModel):
     claims: list[Claim] = Field(default_factory=list)
 
 
+class Evidence(BaseModel):
+    """Something a lookup found that bears on a claim."""
+
+    title: str
+    url: str
+    snippet: str
+
+
 class ClaimCheck(BaseModel):
     claim: Claim
     probability: float = Field(ge=0, le=1)
     """The left's probability that the claim holds."""
     verdict: ClaimVerdict
+    first_probability: float | None = None
+    """The left's probability before the claim was looked up, if it was."""
+    sources: list[Evidence] = Field(default_factory=list)
+    """What the lookup found for the claim, if it was looked up."""
 
 
 class AnswerCheck(BaseModel):

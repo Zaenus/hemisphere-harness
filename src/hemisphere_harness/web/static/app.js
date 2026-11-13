@@ -148,6 +148,8 @@ const state = {
 
 const PROVIDER_NAMES = {
   openai: "OpenAI",
+  anthropic: "Claude · Anthropic",
+  gemini: "Gemini · Google",
   nvidia: "NVIDIA NIM",
   xai: "xAI · Grok",
   openrouter: "OpenRouter",
@@ -311,6 +313,13 @@ function showComposer(prefill = null) {
         "The offline demos below still work."),
       h("button", { class: "btn small", type: "button", onclick: () => openSettings("right") }, "Set up")));
   }
+  if (s.tools_config) {
+    notices.push(h("div", { class: "notice info" }, icon("bolt"),
+      h("div", { class: "grow" }, h("strong", {}, "Tools are connected. "),
+        "Live runs can call the tools in ", h("code", {}, s.tools_config),
+        ". Those calls are real. Tools that change things wait for your sign-off."),
+      h("button", { class: "btn small", type: "button", onclick: () => openSettings("tools") }, "See tools")));
+  }
   if (s.left.experimental) {
     notices.push(h("div", { class: "notice warn" }, icon("alert"),
       h("div", { class: "grow" }, h("strong", {}, "Experimental left hemisphere. "),
@@ -337,6 +346,10 @@ function showComposer(prefill = null) {
         h("div", { class: "foot" },
           h("span", { class: "faint" }, "Actions are simulated. Nothing touches a real system."),
           start)),
+      h("div", { class: "section-title" }, "Or start from an example"),
+      h("div", { class: "examples" }, EXAMPLES.map((example) =>
+        h("button", { class: "btn small", type: "button", title: example.goal, onclick: () => showComposer({ goal: example.goal, context: example.context }) },
+          example.label))),
       h("div", { class: "section-title" }, "Or try a demo ticket"),
       h("div", { class: "demos" },
         demo("lockout", "Locked-out customer", "Routine. The left commits a step on its own, then hands a near-tie back to the right."),
@@ -345,6 +358,26 @@ function showComposer(prefill = null) {
   );
   if (rightReady) goal.focus();
 }
+
+// Starting points beyond support tickets. They fill the composer; nothing runs until you start it.
+const EXAMPLES = [
+  { label: "A research question", goal: "Is it true that Bitcoin is a decentralized currency?", context: "" },
+  {
+    label: "Review some code",
+    goal: "Review this function for bugs and suggest a corrected version.",
+    context: "def average_order_value(orders, discounts=[]):\n    total = 0\n    for order in orders:\n        total += order['amount']\n        discounts.append(order.get('discount', 0))\n    return (total - sum(discounts)) / len(orders)",
+  },
+  {
+    label: "Plan a migration",
+    goal: "Plan how to move our app's database from SQLite to PostgreSQL with as little downtime as possible.",
+    context: "Django app, about 12 GB of data, roughly 200 requests a minute at peak, one production server. We can schedule a short maintenance window at night.",
+  },
+  {
+    label: "Write a reply",
+    goal: "Draft a reply to a customer who received the wrong item.",
+    context: "Order #7731: they ordered a blue backpack and received a green one. They need it for a trip in five days. We have the blue one in stock and offer free express shipping for our mistakes.",
+  },
+];
 
 async function startDemo(key) {
   try {
@@ -370,6 +403,10 @@ const PHASES = {
   draft: "Drafts the answer",
   check: "Checks the claims",
   revise: "Revises the answer",
+  tools: "Connects tools",
+  recall: "Recalls",
+  remember: "Remembers",
+  lookup: "Looks claims up",
   approve: "Sign off",
   reject: "Reject",
   report: "Report",
@@ -660,6 +697,7 @@ class RunView {
     const report = reportEvent ? (reportEvent.data.report ?? reportEvent.summary) : run.report;
     clear(this.answer);
     if (report) this.answer.append(safeMarkdown(report));
+    else if (running && this.liveText) this.answer.append(...this.liveAnswer());
     else if (running) this.answer.append(h("div", { class: "typing", "aria-label": "Working" }, h("span"), h("span"), h("span")));
     else if (run.status === "cancelled") this.answer.append(h("p", { class: "muted" }, "Stopped before the right hemisphere wrote its answer."));
     if (run.error && run.status === "failed") {
@@ -709,6 +747,21 @@ class RunView {
       this.refresh();
       if (atBottom) main.scrollTop = main.scrollHeight;
     });
+    source.addEventListener("delta", (message) => {
+      // A piece of the answer as it is written. The final answer replaces it.
+      const piece = JSON.parse(message.data);
+      this.liveText = piece.reset ? "" : (this.liveText || "") + (piece.text || "");
+      if (!this.liveFrame) {
+        this.liveFrame = requestAnimationFrame(() => {
+          this.liveFrame = null;
+          if (this.run.status !== "running" || this.run.events.some((e) => e.phase === "report")) return;
+          const main = document.getElementById("main");
+          const atBottom = main.scrollHeight - main.scrollTop - main.clientHeight < 80;
+          clear(this.answer).append(...this.liveAnswer());
+          if (atBottom) main.scrollTop = main.scrollHeight;
+        });
+      }
+    });
     source.addEventListener("end", (message) => {
       Object.assign(this.run, JSON.parse(message.data));
       source.close();
@@ -722,6 +775,15 @@ class RunView {
         this.workLine.textContent = "Lost the connection to the server. Reload to reconnect.";
       }
     });
+  }
+
+  liveAnswer() {
+    const checking = this.run.events.some((e) => e.phase === "draft");
+    return [
+      safeMarkdown(this.liveText || ""),
+      h("div", { class: "live-note" }, h("span", { class: "dot right live" }),
+        checking ? "Checking this answer before it is final…" : "Writing…"),
+    ];
   }
 
   async copy(text) {
@@ -932,6 +994,10 @@ function nextActivity(run) {
   if (!last) return run.resumed_from ? ["harness", "Continuing with your decision…"] : ["right", "The right hemisphere is planning…"];
   const step = last.step || 0;
   switch (last.phase) {
+    case "recall":
+      return ["right", "The right hemisphere is planning…"];
+    case "tools":
+      return ["right", "The right hemisphere is planning…"];
     case "plan":
       return ["right", "The right is proposing options for step 1…"];
     case "propose":
@@ -962,6 +1028,8 @@ function nextActivity(run) {
       const n = (last.data.claims || []).length;
       return n ? ["left", `The left is checking ${n} claim${n === 1 ? "" : "s"} in the answer…`] : ["harness", "Finishing…"];
     }
+    case "lookup":
+      return ["left", "The left is judging those claims again, with what was found…"];
     case "check": {
       const weak = (last.data.checks || []).filter((c) => c.verdict !== "holds").length;
       return weak ? ["right", `The right is revising ${weak} claim${weak === 1 ? "" : "s"} that did not hold…`] : ["harness", "Finishing…"];
@@ -998,7 +1066,7 @@ function renderEvent(event, run) {
           h("span", { class: `chip ${decides ? "left" : "right"}` }, decides ? "the left may decide" : "the left only advises")),
         h("div", { class: "sub" }, p.rationale),
         h("div", { class: "options" }, p.options.map((o) =>
-          h("div", { class: "option" }, h("code", {}, o.id), h("span", { class: "desc" }, o.description)))));
+          h("div", { class: "option" }, h("code", {}, o.id), h("span", { class: "desc" }, o.description, toolCall(o))))));
     }
     case "decide": {
       if (d.error !== undefined) {
@@ -1054,9 +1122,23 @@ function renderEvent(event, run) {
     case "act": {
       const a = d.action;
       if (!a) return fallback(event, card);
-      return card("simulated",
-        h("div", {}, h("code", {}, a.option_id), a.ok ? "" : h("span", { class: "chip danger" }, "failed")),
+      const option = findOption(run, event.step, a.option_id);
+      return card(a.tool ? null : "simulated",
+        h("div", { class: "chips" }, h("code", {}, a.option_id),
+          a.tool ? h("span", { class: "chip harness", title: "This really ran." }, `tool: ${a.tool}`) : null,
+          a.ok ? null : h("span", { class: "chip danger" }, "failed")),
+        option && option.tool ? h("div", { class: "sub mono" }, JSON.stringify(option.arguments || {})) : null,
         h("div", { class: "output" }, a.output));
+    }
+    case "tools": {
+      const tools = d.tools || [];
+      const errors = Object.entries(d.errors || {});
+      return card(null,
+        h("div", { class: "text" }, `${tools.length} tool${tools.length === 1 ? "" : "s"} available to this run.`),
+        tools.length ? h("div", { class: "chips spaced" }, tools.map((t) =>
+          h("span", { class: `chip ${t.needs_approval ? "warn" : ""}`, title: t.description }, t.name))) : null,
+        errors.map(([server, error]) => h("div", { class: "notice warn spaced" }, icon("alert"),
+          h("div", { class: "grow" }, h("strong", {}, `${server} did not start. `), error))));
     }
     case "reintegrate": {
       const r = d.reintegration;
@@ -1103,11 +1185,36 @@ function renderEvent(event, run) {
             marker.style.left = `calc(${pct(m)} - 1px)`;
             track.append(marker);
           }
+          const sources = c.sources || [];
           return h("div", { class: "claim-row" },
             h("div", { class: "claim-text" }, c.claim.text),
+            c.first_probability != null ? h("div", { class: "faint small-note" }, `before the lookup: ${fmt(c.first_probability)}`) : null,
+            sources.length ? h("div", { class: "sources" }, "Sources: ", sources.map((s, i) => [i ? ", " : "",
+              /^https?:\/\//.test(s.url) ? h("a", { href: s.url, target: "_blank", rel: "noopener noreferrer" }, s.title) : s.title])) : null,
             h("div", { class: "claim-bar" }, track, h("span", { class: "val" }, fmt(c.probability)),
               h("span", { class: `chip ${c.verdict === "holds" ? "ok" : c.verdict === "doubtful" ? "danger" : ""}` }, c.verdict)));
         })));
+    }
+    case "recall": {
+      const recalled = d.recalled || [];
+      const prefs = d.preferences || 0;
+      const facts = recalled.length - prefs;
+      return card(null,
+        h("div", { class: "text" }, recalled.length
+          ? `Recalled ${prefs ? `${prefs} preference${prefs === 1 ? "" : "s"}` : ""}${prefs && d.considered ? " and " : ""}${d.considered ? `${facts} of ${d.considered} fact${d.considered === 1 ? "" : "s"}` : ""} from earlier conversations.`
+          : `None of the ${d.considered} saved fact${d.considered === 1 ? "" : "s"} bore on this.`),
+        recalled.length ? h("ul", {}, recalled.map((n) => h("li", {}, n.text))) : null);
+    }
+    case "remember": {
+      const notes = d.notes || [];
+      return card(null, h("div", { class: "text" }, "Kept for later conversations:"), h("ul", {}, notes.map((n) => h("li", {}, n.text))));
+    }
+    case "lookup": {
+      const results = d.results || [];
+      return card(d.source || null,
+        h("div", { class: "text" }, `Looked up ${results.length} claim${results.length === 1 ? "" : "s"} the left was unsure of.`),
+        results.map((r) => h("div", { class: "sub" }, r.claim.text, " → ",
+          r.sources.length ? r.sources.map((s) => s.title).join(", ") : "nothing found")));
     }
     case "revise":
       return card(null, h("div", { class: "text" }, event.summary.replace(/^revised the answer/, "Revised the answer")),
@@ -1119,6 +1226,21 @@ function renderEvent(event, run) {
     default:
       return fallback(event, card);
   }
+}
+
+function toolCall(option) {
+  if (!option.tool) return null;
+  return h("span", { class: "tool-call", title: JSON.stringify(option.arguments || {}) },
+    h("span", { class: "chip harness" }, `calls ${option.tool}`));
+}
+
+function findOption(run, step, id) {
+  const propose = run.events.find((e) => e.phase === "propose" && e.step === step);
+  const options = propose && propose.data.proposal ? propose.data.proposal.options : [];
+  const found = options.find((o) => o.id === id);
+  if (found) return found;
+  const approve = run.events.find((e) => e.phase === "approve" && e.step === step);
+  return approve && approve.data.option && approve.data.option.id === id ? approve.data.option : null;
 }
 
 function fallback(event, card) {
@@ -1171,7 +1293,8 @@ function signOff(run, conversation) {
       const permit = decision.permits ? decision.permits[o.id] : undefined;
       return h("div", { class: `option ${o.id === recommended ? "chosen" : ""}` },
         h("code", {}, o.id),
-        h("span", { class: "desc" }, o.description,
+        h("span", { class: "desc" }, o.description, toolCall(o),
+          o.tool ? h("span", { class: "mono tool-args" }, JSON.stringify(o.arguments || {})) : null,
           o.id === recommended ? h("span", { class: "chip right" }, "the right recommends") : null,
           o.id === decision.left_choice ? h("span", { class: "chip left" }, `the left's pick, p=${fmt(decision.probability)}`) : null,
           permit !== undefined ? h("span", { class: "chip" }, `policy ${fmt(permit)}`) : null),
@@ -1362,6 +1485,8 @@ const SECTIONS = [
   ["right", "Right hemisphere"],
   ["left", "Left hemisphere"],
   ["loop", "Loop and policy"],
+  ["tools", "Tools"],
+  ["memory", "Memory"],
   ["about", "About"],
 ];
 
@@ -1415,7 +1540,7 @@ function renderSettings() {
         onclick: () => { settings.section = key; settings.picker = null; renderSettings(); },
       }, label)));
 
-  const body = { right: rightSection, left: leftSection, loop: loopSection, about: aboutSection }[settings.section]();
+  const body = { right: rightSection, left: leftSection, loop: loopSection, tools: toolsSection, memory: memorySection, about: aboutSection }[settings.section]();
   const dirty = Object.keys(settings.draft).length > 0;
   const statusText = h("span", { class: `status-text ${settings.status.kind}` }, settings.status.text);
   const testable = settings.section === "right" || settings.section === "left";
@@ -1547,7 +1672,7 @@ function providerTiles(side, providers, selected) {
       h("span", { class: "s" }, tileSummary(p, side)));
 
   if (side === "right") {
-    const order = ["openai", "nvidia", "xai", "openrouter", "ollama", "lmstudio", "vllm", "llamacpp", "openai-compatible"];
+    const order = ["anthropic", "openai", "gemini", "nvidia", "xai", "openrouter", "ollama", "lmstudio", "vllm", "llamacpp", "openai-compatible"];
     providers = [...providers].sort((a, b) => (order.indexOf(a.name) + 1 || 99) - (order.indexOf(b.name) + 1 || 99));
     const groups = [
       ["Hosted", providers.filter((p) => p.base_url && !p.base_url.startsWith("http://localhost"))],
@@ -1657,6 +1782,7 @@ function rightSection() {
   if (!provider.plugin) {
     fields.push(modelField("right", provider));
     if (provider.api_key_env) fields.push(secretField(provider.api_key_env, `${providerName(provider.name, "right")} API key`));
+    if ((provider.settings || []).includes("RIGHT_EFFORT")) fields.push(choiceField("RIGHT_EFFORT", { "": "The model's default" }));
     fields.push(textField("RIGHT_BASE_URL", {
       label: "Base URL",
       placeholder: provider.base_url || "https://your-server.example/v1 (required)",
@@ -1747,7 +1873,144 @@ function loopSection() {
       h("div", { class: "form-grid" },
         textField("HARNESS_COMMIT_THRESHOLD", { type: "number" }),
         textField("HARNESS_MAX_STEPS", { type: "number" })),
-      boolField("HARNESS_CHECK_ANSWERS")));
+      answerCheckCard()));
+}
+
+const MCP_EXAMPLE = `{
+  "mcpServers": {
+    "files": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/a/folder"]
+    },
+    "remote": {
+      "url": "https://example.com/mcp",
+      "headers": { "Authorization": "Bearer ..." },
+      "approval": "always"
+    }
+  }
+}`;
+
+function toolsSection() {
+  const result = h("div", { class: "stack" });
+  const check = h("button", { class: "btn", type: "button" }, icon("bolt"), "Check tools");
+  check.addEventListener("click", async () => {
+    check.disabled = true;
+    clear(result).append(h("p", { class: "muted" }, "Connecting to the servers…"));
+    try {
+      const data = await api("/api/tools");
+      clear(result);
+      if (!data.config) {
+        result.append(h("p", { class: "muted" }, "No servers file is set."));
+      } else {
+        const bySource = new Map();
+        for (const tool of data.tools) {
+          if (!bySource.has(tool.source)) bySource.set(tool.source, []);
+          bySource.get(tool.source).push(tool);
+        }
+        for (const [source, tools] of bySource) {
+          result.append(h("div", { class: "card" },
+            h("div", { class: "field-label" }, source, h("span", { class: "faint" }, `${tools.length} tool${tools.length === 1 ? "" : "s"}`)),
+            h("div", { class: "tool-list" }, tools.map((t) => h("div", { class: "tool-row" },
+              h("code", {}, t.name),
+              h("span", { class: `chip ${t.needs_approval ? "warn" : "ok"}` }, t.needs_approval ? "needs your sign-off" : "runs freely"),
+              h("div", { class: "faint" }, t.description))))));
+        }
+        for (const [server, error] of Object.entries(data.errors)) {
+          result.append(h("div", { class: "notice warn" }, icon("alert"), h("div", { class: "grow" }, h("strong", {}, `${server} did not start. `), error)));
+        }
+        if (!data.tools.length && !Object.keys(data.errors).length) result.append(h("p", { class: "muted" }, "The file lists no servers."));
+      }
+    } catch (error) {
+      if (error.status !== 401) clear(result).append(h("div", { class: "notice danger" }, icon("alert"), h("div", { class: "grow" }, error.message)));
+    }
+    check.disabled = false;
+  });
+  return h("div", {},
+    h("div", { class: "settings-title" }, "Tools"),
+    h("p", { class: "settings-sub" }, "Tools from MCP servers become options the right can propose. The left still chooses, and a tool that changes anything waits for your sign-off before it runs."),
+    h("div", { class: "stack" },
+      textField("HARNESS_MCP_CONFIG", { placeholder: "mcp.json" }),
+      h("div", { class: "row" }, check, h("span", { class: "faint" }, "Connects to each server, lists its tools, then disconnects.")),
+      result,
+      h("details", { class: "more" }, h("summary", {}, icon("chevron"), "The file's format"),
+        h("div", { class: "stack" },
+          h("p", { class: "muted" }, "The same mcpServers format other MCP clients use. Per server, \"approval\" can be \"unless_read_only\" (the default), \"always\" or \"never\", and \"tools\" can list the only tools to offer. Edit the file itself: the page does not change it, because its entries are programs that run on this machine."),
+          h("pre", { class: "output" }, MCP_EXAMPLE)))));
+}
+
+function choiceField(name, labels = {}) {
+  const f = fieldInfo(name);
+  const value = current(name) || "";
+  const select = h("select", {
+    class: "input", id: `f-${name}`, disabled: f.source === "environment",
+    onchange: (event) => { settings.draft[name] = event.target.value || null; renderSettings(); },
+  }, (f.choices || []).map((choice) => h("option", { value: choice, selected: choice === value }, labels[choice] || choice || "Off")));
+  return h("div", { class: "field" },
+    h("label", { class: "field-label", for: `f-${name}` }, f.label, sourceBadge(f)),
+    select,
+    f.help ? h("span", { class: "field-help" }, f.help) : null);
+}
+
+function answerCheckCard() {
+  const lookup = current("HARNESS_LOOKUP") || "";
+  return h("div", { class: "card stack" },
+    h("div", { class: "field-label" }, "Answer check"),
+    boolField("HARNESS_CHECK_ANSWERS"),
+    choiceField("HARNESS_LOOKUP", { "": "Off: the left judges from what it knows", wikipedia: "Wikipedia (no key)", searxng: "SearXNG (your own instance)", brave: "Brave Search (API key)" }),
+    lookup === "wikipedia" ? textField("HARNESS_LOOKUP_LANGUAGE", { placeholder: "en" }) : null,
+    lookup === "searxng" ? textField("HARNESS_LOOKUP_URL", { placeholder: "http://localhost:8888" }) : null,
+    lookup === "brave" ? secretField("BRAVE_API_KEY") : null,
+    lookup ? h("div", { class: "notice warn" }, icon("info"), h("div", { class: "grow" },
+      "Claims the left is unsure of are sent, as search queries, to this service.")) : null);
+}
+
+function memorySection() {
+  const list = h("div", { class: "stack" }, h("p", { class: "muted" }, "Loading…"));
+  const load = async () => {
+    try {
+      const data = await api("/api/memory");
+      clear(list);
+      list.append(h("p", { class: "faint" }, `Kept in ${data.path}`));
+      if (!data.notes.length) {
+        list.append(h("p", { class: "muted" }, data.enabled ? "Nothing remembered yet." : "Nothing remembered."));
+        return;
+      }
+      for (const note of data.notes) {
+        const remove = h("button", { class: "btn small ghost", type: "button" }, icon("trash"), "Forget");
+        remove.addEventListener("click", async () => {
+          try {
+            await api(`/api/memory/${encodeURIComponent(note.id)}`, { method: "DELETE" });
+            load();
+          } catch (error) {
+            if (error.status !== 401) toast(error.message, "error");
+          }
+        });
+        list.append(h("div", { class: "note-row" },
+          h("div", { class: "grow" }, h("div", {}, note.text, " ",
+            h("span", { class: `chip ${note.kind === "preference" ? "right" : ""}`, title: note.kind === "preference" ? "Always recalled" : "Recalled when a request touches it" }, note.kind || "fact")),
+            h("div", { class: "faint" }, relativeTime(note.created), note.source ? ` · from “${note.source.slice(0, 80)}”` : "")),
+          remove));
+      }
+      const all = h("button", { class: "btn small danger", type: "button" }, "Forget everything");
+      all.addEventListener("click", async () => {
+        if (!confirm("Forget every note?")) return;
+        await api("/api/memory", { method: "DELETE" });
+        load();
+      });
+      list.append(h("div", {}, all));
+    } catch (error) {
+      if (error.status !== 401) clear(list).append(h("div", { class: "notice danger" }, icon("alert"), h("div", { class: "grow" }, error.message)));
+    }
+  };
+  load();
+  return h("div", {},
+    h("div", { class: "settings-title" }, "Memory"),
+    h("p", { class: "settings-sub" }, "With memory on, the right keeps short notes worth remembering, such as your preferences or lasting facts about your work, and the left recalls the ones that bear on each new request. The notes stay on this machine."),
+    h("div", { class: "stack" },
+      boolField("HARNESS_MEMORY"),
+      textField("HARNESS_MEMORY_FILE", { placeholder: "memory.json next to the run history" }),
+      h("div", { class: "field-label" }, "What it remembers"),
+      list));
 }
 
 function aboutSection() {

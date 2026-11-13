@@ -6,6 +6,7 @@ See README.md for the idea and docs/architecture.md for the contract.
 
 from .config import HarnessConfig, Settings
 from .conversation import Conversation
+from .mcp_tools import MCPConfig, MCPToolbox, load_mcp_config
 from .errors import ConfigError, HarnessError, LeftHemisphereError, RightHemisphereError
 from .harness import Actuator, Harness, dry_run
 from .left import (
@@ -67,9 +68,10 @@ from .schemas import (
     Verdict,
     WorldState,
 )
+from .tools import FunctionToolbox, Toolbox, ToolResult, ToolSpec
 from .trace import Actor, Trace, TraceEvent, TracePrinter
 
-__version__ = "0.1.1"
+__version__ = "0.2.0"
 
 __all__ = [
     "ActionResult",
@@ -91,6 +93,7 @@ __all__ = [
     "Evaluation",
     "ExperimentalLLMLeft",
     "ExperimentalWarning",
+    "FunctionToolbox",
     "Harness",
     "HarnessConfig",
     "HarnessError",
@@ -101,6 +104,8 @@ __all__ = [
     "LeftHemisphere",
     "LeftHemisphereError",
     "LeftResult",
+    "MCPConfig",
+    "MCPToolbox",
     "MockLeftHemisphere",
     "NoulAnswer",
     "NoulQuestion",
@@ -123,6 +128,9 @@ __all__ = [
     "Settings",
     "Stakes",
     "StepRecord",
+    "ToolResult",
+    "ToolSpec",
+    "Toolbox",
     "Trace",
     "TraceEvent",
     "TracePrinter",
@@ -133,6 +141,7 @@ __all__ = [
     "build_right",
     "dry_run",
     "left_providers",
+    "load_mcp_config",
     "register_left",
     "register_openai_compatible",
     "register_right",

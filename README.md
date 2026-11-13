@@ -10,6 +10,8 @@ enforces which of them may commit to what.
 The design borrows from Iain McGilchrist's account of the cerebral hemispheres in
 *The Master and His Emissary*.
 
+![The offline demo in the web UI: the run grows as a network, step by step, then the answer is checked and appears](https://raw.githubusercontent.com/Zaenus/hemisphere-harness/main/docs/images/demo.gif)
+
 ## The idea
 
 McGilchrist argues that the hemispheres differ less in what they do than in how they
@@ -110,15 +112,15 @@ four parts:
   test each hemisphere with one small real call. Settings are saved to `.env` in the
   directory you started from, which is the same file the command-line example reads.
 - **Conversations.** Start one with a goal, context, an operator policy and a step limit,
-  then reply under the answer as in any chat. The two demo tickets run offline until a
-  right hemisphere is set up.
+  or from one of the example tasks, then reply under the answer as in any chat. The two
+  demo tickets run offline, at a pace you can watch, until a right hemisphere is set up.
 - **Each run drawn as a network.** Layers of neurons run from your request to the
   answer: the plan, every step's options lit by the left's probability and wired to that
   step's outcome, and the answer's claims coloured by whether they held. While a run is
   live, signals pulse into the newest layer. Hover a neuron for what it is; click a step
   to open its details.
 - **Runs that read like a chat.** Your request, then the right hemisphere's answer,
-  formatted like any LLM reply. The work in between is folded into one line that says
+  formatted like any LLM reply and streamed as it is written. The work in between is folded into one line that says
   what is happening now while the run is live, and who settled each step once it is
   done. Unfold it to see every step: which hemisphere did what, the left's probabilities
   against the commit and policy thresholds, and each gate's verdict and why.
@@ -128,7 +130,11 @@ four parts:
   the agent continues and answers. Reject them and it looks for another way. Either can
   carry a note.
 
-Run history is kept in `./.hemisphere/`. Actions in the UI are always simulated.
+Settings also has tabs for **Tools** (your MCP servers and what each tool may do alone)
+and **Memory** (what the agent remembers across conversations, with buttons to forget).
+
+Run history is kept in `./.hemisphere/`. Actions in the UI are simulated, except calls to
+the tools you connect.
 
 | Option | Default | |
 |---|---|---|
@@ -150,6 +156,55 @@ The server holds your API keys and can spend money with them, so it protects the
 - Model output is shown as text only, under a strict Content-Security-Policy.
 
 `python -m hemisphere_harness web` works too. Without `web`, the command lists providers.
+
+## Tools
+
+The agent can act through tools from any MCP server: files, GitHub, databases, search,
+whatever the server offers. The right proposes concrete tool calls as options, the left
+chooses among them as usual, and the harness makes the call.
+
+```bash
+pip install "hemisphere-harness[web,mcp]"
+```
+
+List your servers in a JSON file, in the `mcpServers` format other MCP clients use, and
+point `HARNESS_MCP_CONFIG` at it (or set it under Settings → Tools):
+
+```json
+{
+  "mcpServers": {
+    "files": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/me/notes"]
+    }
+  }
+}
+```
+
+**Tools that change things wait for you.** A tool its server marks read-only runs as soon
+as the agent decides to use it. Any other tool is never called by either hemisphere
+alone: the run stops, shows you the exact call, and runs it only if you approve. Per
+server, `"approval"` can be `"unless_read_only"` (the default), `"always"` or `"never"`,
+and `"tools"` can limit which of its tools are offered.
+
+A tool call is real. In the web UI and the terminal chat, everything else the agent
+decides to do is still simulated. Only add servers you would run yourself: a local server
+is a program on your machine, with whatever access its tools have.
+
+In Python, pass a toolbox to the harness. Plain functions work too:
+
+```python
+from hemisphere_harness import FunctionToolbox, Harness
+
+toolbox = FunctionToolbox()
+
+@toolbox.tool(read_only=True)
+def lookup_order(order_id: str) -> str:
+    "Find an order by its id."
+    return f"order {order_id}: shipped"
+
+harness = Harness(right, left, toolbox=toolbox)    # or: await MCPToolbox.connect(config)
+```
 
 ## Conversations
 
@@ -281,8 +336,49 @@ its context, and the right corrects or qualifies any claim that does not hold. T
 offline demo shows it: the draft for the lockout ticket calls it the customer's first
 lockout, the left doubts that (0.04), and the reply you get says second.
 
-The left judges claims with what it knows, and nothing is looked up, so a claim that
-"holds" is one that is not obviously wrong. `docs/architecture.md` has the details.
+On its own the left judges claims with what it knows, so a claim that "holds" is one that
+is not obviously wrong. To check against sources, turn on lookups: claims the left is
+unsure of are searched for, and the left judges them again with what was found. The
+right revises with the sources in view and may cite them.
+
+| `HARNESS_LOOKUP` | Source | Needs |
+|---|---|---|
+| empty (default) | none: the left's own knowledge | |
+| `wikipedia` | Wikipedia's search, matching passage and page opening | nothing; `HARNESS_LOOKUP_LANGUAGE` for another language |
+| `searxng` | your own SearXNG instance | `HARNESS_LOOKUP_URL` |
+| `brave` | Brave Search API | `BRAVE_API_KEY` |
+
+Lookups send the claims, as search queries, to that service, so they are off until you
+turn them on. What a tool returned during the run also counts as evidence. `docs/architecture.md`
+has the details.
+
+## Memory
+
+With `HARNESS_MEMORY=true`, the agent remembers across conversations. At the end of a
+run the right decides whether anything is worth keeping, and of what kind. Usually
+nothing is, and never anything sensitive.
+
+- **A preference**, such as "prefers short answers in plain words", is about how to work
+  with you, so it applies to every request and is always recalled.
+- **A fact**, such as "the company uses Django and PostgreSQL", matters only when a
+  request touches it. At the start of a run the left judges each saved fact against the
+  new request, one yes/no question per note, and only the relevant ones reach the right. The notes are
+kept in `.hemisphere/memory.json` on your machine; the web UI's Settings → Memory lists
+them and forgets them.
+
+## Evaluating the left hemisphere
+
+```bash
+hemisphere-harness eval
+```
+
+Runs the left over 40 decisions with known answers, in six domains, asking exactly what
+the harness would ask, and reports how often its picks are right, how well calibrated
+they are, the lowest commit threshold where it is right 95% of the time, and whether its
+policy gate ever allows what the policy reserves for a person. On this laptop the 4.3B
+`tev1` was right 90% of the time, 97% when sure, and never wrongly allowed a reserved
+action; the 0.8B model allowed four. [docs/evaluation.md]({BLOB}docs/evaluation.md) has
+the full results and how to add your own scenarios.
 
 ## Providers
 
@@ -292,6 +388,8 @@ with `RIGHT_MODEL`, and supply the provider's key where it needs one.
 | `RIGHT_PROVIDER` | Endpoint | Key variable |
 |---|---|---|
 | `openai` (default) | `https://api.openai.com/v1` | `OPENAI_API_KEY` |
+| `anthropic` or `claude` | Anthropic's API, through its SDK (needs the `anthropic` extra) | `ANTHROPIC_API_KEY`, or an `ant auth login` profile |
+| `gemini` or `google` | `https://generativelanguage.googleapis.com/v1beta/openai` | `GEMINI_API_KEY` |
 | `nvidia` | `https://integrate.api.nvidia.com/v1` | `NVIDIA_API_KEY` |
 | `xai` or `grok` | `https://api.x.ai/v1` | `XAI_API_KEY` |
 | `openrouter` | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` |
@@ -411,6 +509,14 @@ Set these in the environment or in `.env`. All are optional.
 | `HARNESS_MAX_STEPS` | `6` | |
 | `HARNESS_POLICY` | empty | Operator policy in plain language. Empty disables the gate. |
 | `HARNESS_CHECK_ANSWERS` | `true` | Check the answer's factual claims with the left before the person sees it. |
+| `HARNESS_MCP_CONFIG` | unset | A JSON file of MCP servers whose tools runs may use. Needs the `mcp` extra. |
+| `HARNESS_LOOKUP` | empty | Where the answer check looks claims up: `wikipedia`, `searxng` or `brave`. |
+| `HARNESS_LOOKUP_URL` | unset | For `searxng`: the address of your instance. |
+| `HARNESS_LOOKUP_LANGUAGE` | `en` | For `wikipedia`: which language's Wikipedia. |
+| `BRAVE_API_KEY` | unset | For `brave`. |
+| `HARNESS_MEMORY` | `false` | Remember across conversations. |
+| `HARNESS_MEMORY_FILE` | `.hemisphere/memory.json` | Where the notes are kept. |
+| `RIGHT_EFFORT` | unset | For Claude: `low`, `medium`, `high`, `xhigh` or `max`. |
 
 The right-hemisphere client sends only `model` and `messages` unless you configure more,
 and it asks for JSON in the prompt instead of relying on `response_format`, so it works
@@ -443,11 +549,17 @@ src/hemisphere_harness/
 ├── _http.py                POST with retries, shared by both clients
 ├── cli.py                  `hemisphere-harness`: lists providers, starts the web UI, or chats
 ├── conversation.py         Conversation: replies that remember, and sign-offs that continue
+├── tools.py                Toolbox, FunctionToolbox: tools options can call, and who must approve them
+├── mcp_tools.py            MCPToolbox: tools from MCP servers
+├── lookup.py               searching Wikipedia, SearXNG or Brave for evidence on claims
+├── memory.py               notes kept across conversations
+├── evals/                  the evaluation suite and its 40 scenarios
 ├── __main__.py             `python -m hemisphere_harness`, the same command
 ├── right/
 │   ├── base.py             RightHemisphere: plan, propose, evaluate, reintegrate, generate
 │   ├── llm.py              LLMRightHemisphere: all of the above from one method, complete()
 │   ├── openai_compatible.py
+│   ├── anthropic.py        Claude, through Anthropic's SDK
 │   ├── prompts.py
 │   └── mock.py             ScriptedRightHemisphere, for tests and the offline demo
 ├── left/
@@ -464,6 +576,8 @@ src/hemisphere_harness/
 tests/
 docs/architecture.md        the contract in detail, and where to extend
 docs/providers.md           using and adding providers
+docs/evaluation.md          measuring a left hemisphere, and the results so far
+.github/ISSUE_TEMPLATE/     bug reports, ideas and provider requests
 .github/workflows/ci.yml    tests, types and the example, on every push and pull request
 .github/workflows/publish.yml  builds the package and uploads it to PyPI when a release is published
 CONTRIBUTING.md
@@ -477,9 +591,10 @@ This is a first version, kept small on purpose.
 - **Tested live with local models only.** Both hemispheres have been run end to end
   through Ollama: `gemma4` as the right, and the `tev1` decision models (4.3B and 0.8B)
   as the left.
-  The hosted providers (OpenAI, NVIDIA, xAI, OpenRouter) use the same client as Ollama
-  and their endpoints were checked to respond, but no request has been made to them with
-  a real key. TypeSafe's hosted Jev has not been run either. Its client is the one that
+  NVIDIA's hosted models have also been run as the right. OpenAI, xAI, OpenRouter and
+  Gemini use the same client and were checked to respond, but no request has been made
+  to them with a real key. The Claude provider is tested against Anthropic's SDK with a
+  mock transport only. TypeSafe's hosted Jev has not been run either. Its client is the one that
   was verified against Ollama's implementation of the same protocol, and it is tested
   against mock transports that reproduce TypeSafe's API reference.
 - **The policy gate needs a big enough decision model.** The 4.3B `tev1` got all 23 of
@@ -495,11 +610,12 @@ This is a first version, kept small on purpose.
 - **The mock left is a stand-in.** Its heuristic picks the option whose text overlaps most
   with the state. It answers every yes/no question 0.5, so with a policy set it sends
   every step back to the right. Its numbers say nothing about how Jev would answer.
-- **Actions are one callable.** There is no tool registry yet. See the extension points
-  in `docs/architecture.md`.
-- **Memory lasts one conversation.** Within a conversation every run sees what came
-  before; a new conversation starts empty. Long conversations are cut to the last eight
-  exchanges for the right.
+- **Tools are new.** They have been run live against a local MCP server, not yet against
+  the wider ecosystem of public servers.
+- **Lookups are only as good as the search.** Wikipedia covers general knowledge well and
+  specialised or recent facts poorly; a claim with no evidence keeps its first verdict.
+- **Long conversations are cut** to the last eight exchanges for the right, and memory
+  across conversations is off unless you turn it on.
 - **The web UI is for one person on one machine.** It has a launch token, not user
   accounts, and it cannot store a value containing `${` because `.env` files expand it.
 - Jev's image inputs and `box` questions are not supported.

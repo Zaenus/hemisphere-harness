@@ -24,6 +24,13 @@ test HTTP clients against `httpx.MockTransport`, as `tests/test_jev_client.py` a
 Types are checked with `mypy --strict src`. CI runs the tests, the type check and the
 offline example on Python 3.11 to 3.14 for every pull request, so run them locally first.
 
+## Measuring the left hemisphere
+
+A change to a left-hemisphere provider, to the questions the harness asks it, or to the
+gate's thresholds should come with numbers. Run `hemisphere-harness eval` before and after,
+with the left you changed, and put both reports in the pull request.
+[docs/evaluation.md](docs/evaluation.md) explains the report and how to add scenarios.
+
 ## Adding a provider
 
 This is the most useful kind of contribution, and usually the smallest.

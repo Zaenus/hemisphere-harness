@@ -328,7 +328,9 @@ async def test_trace_attributes_each_phase_to_whoever_did_it():
         (Actor.RIGHT, "report"),
         (Actor.HARNESS, "end"),
     ]
-    assert seen == result.trace
+    assert [event for event in seen if not event.transient] == result.trace
+    # A listener also gets the answer as it is written, which the trace does not keep.
+    assert [event.data for event in seen if event.transient] == [{"text": "final report"}]
     assert result.report == "final report"
 
 

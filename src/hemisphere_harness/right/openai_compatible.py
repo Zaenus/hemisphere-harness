@@ -4,6 +4,8 @@ That covers OpenAI, NVIDIA, xAI, OpenRouter, and local servers such as Ollama, L
 vLLM and llama.cpp. The named presets for each live in providers.py.
 """
 
+import json
+from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
@@ -74,6 +76,32 @@ class OpenAICompatibleRight(LLMRightHemisphere):
         if not isinstance(content, str) or not content.strip():
             raise RightHemisphereError("the LLM returned an empty message")
         return content
+
+    async def complete_stream(self, messages: list[ChatMessage]) -> AsyncIterator[str]:
+        """Server-sent events, as every compatible server streams them. Not retried: the
+        harness falls back to `complete` if a stream fails."""
+        payload: dict[str, Any] = {"model": self.model, "messages": messages, "stream": True}
+        if self._temperature is not None:
+            payload["temperature"] = self._temperature
+        try:
+            async with self._client.stream("POST", "/chat/completions", json=payload) as response:
+                if not response.is_success:
+                    await response.aread()
+                    raise RightHemisphereError(f"the LLM ({self.name}) refused to stream: HTTP {response.status_code}")
+                async for line in response.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        break
+                    try:
+                        piece = json.loads(data)["choices"][0]["delta"].get("content")
+                    except (ValueError, KeyError, IndexError, TypeError, AttributeError):
+                        continue  # keep-alives, usage reports, reasoning: nothing to show
+                    if isinstance(piece, str) and piece:
+                        yield piece
+        except httpx.HTTPError as exc:
+            raise RightHemisphereError(f"the LLM ({self.name}) stream failed: {type(exc).__name__}") from exc
 
     async def aclose(self) -> None:
         await self._client.aclose()

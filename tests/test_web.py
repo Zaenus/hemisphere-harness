@@ -21,7 +21,7 @@ AUTH = {"Authorization": f"Bearer {TOKEN}"}
 
 def make_app(tmp_path, *, host="127.0.0.1", transport=None):
     return create_app(
-        WebConfig(env_file=tmp_path / ".env", data_dir=tmp_path / "data", token=TOKEN, host=host, transport=transport)
+        WebConfig(env_file=tmp_path / ".env", data_dir=tmp_path / "data", token=TOKEN, host=host, transport=transport, demo_pace_s=0)
     )
 
 
@@ -543,3 +543,59 @@ async def test_a_conversation_is_deleted_whole(clean_env, tmp_path):
         assert sorted(deleted.json()["deleted"]) == sorted([stopped["id"], resumed["id"]])
         assert (await http.get("/api/runs", headers=AUTH)).json()["runs"] == []
         assert (await http.get(f"/api/conversations/{stopped['conversation_id']}", headers=AUTH)).status_code == 404
+
+
+# --- Tools ------------------------------------------------------------------------------------
+
+import sys  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+MCP_SERVER = str(Path(__file__).with_name("mcp_test_server.py"))
+
+
+def write_mcp_config(tmp_path):
+    path = tmp_path / "mcp.json"
+    path.write_text(json.dumps({"mcpServers": {"shop": {"command": sys.executable, "args": [MCP_SERVER]}}}))
+    return path
+
+
+async def test_the_tools_endpoint_lists_what_the_servers_offer(clean_env, tmp_path):
+    async with client(make_app(tmp_path)) as http:
+        none = (await http.get("/api/tools", headers=AUTH)).json()
+        assert none == {"config": None, "tools": [], "errors": {}}
+
+        clean_env.setenv("HARNESS_MCP_CONFIG", str(write_mcp_config(tmp_path)))
+        listed = (await http.get("/api/tools", headers=AUTH)).json()
+        tools = {tool["name"]: tool["needs_approval"] for tool in listed["tools"]}
+        assert tools == {"shop.lookup_order": False, "shop.save_note": True, "shop.broken": False}
+        assert (await http.get("/api/status", headers=AUTH)).json()["tools_config"] == str(tmp_path / "mcp.json")
+
+        (tmp_path / "mcp.json").write_text("{broken")
+        bad = await http.get("/api/tools", headers=AUTH)
+        assert bad.status_code == 400 and "not valid JSON" in bad.json()["error"]
+
+
+async def test_a_live_run_calls_a_real_tool(clean_env, tmp_path, monkeypatch):
+    from hemisphere_harness import ChoiceAnswer, MockLeftHemisphere, Option, Proposal, Reintegration, Stakes
+
+    lookup = Option(id="look", description="Look up order A1", tool="shop.lookup_order", arguments={"order_id": "A1"})
+    right = lambda s: ScriptedRightHemisphere(  # noqa: E731
+        plan=Plan(situation="s"),
+        proposals=[Proposal(options=[lookup, Option(id="reply", description="reply")], rationale="r", stakes=Stakes.LOW, open_ended=False)],
+        reintegrations=[Reintegration(situation="found", goal_met=True)],
+        report="It has shipped.",
+    )
+    left = lambda s: MockLeftHemisphere(script=[{"select": ChoiceAnswer.from_probabilities({"look": 0.95, "reply": 0.05})}])  # noqa: E731
+    monkeypatch.setattr(runs_module, "build_right", right)
+    monkeypatch.setattr(runs_module, "build_left", left)
+    clean_env.setenv("RIGHT_MODEL", "anything")
+    clean_env.setenv("HARNESS_MCP_CONFIG", str(write_mcp_config(tmp_path)))
+
+    async with client(make_app(tmp_path)) as http:
+        run = await wait_for_end(http, (await http.post("/api/runs", headers=AUTH, json={"goal": "Where is A1?"})).json()["id"], timeout=20)
+
+    assert run["status"] == "done", run["error"]
+    assert run["events"][0]["phase"] == "tools"
+    assert "shop.lookup_order" in run["tools"]
+    act = next(event for event in run["events"] if event["phase"] == "act")
+    assert act["data"]["action"] == {"option_id": "look", "ok": True, "output": "order A1: 2 items, shipped", "tool": "shop.lookup_order"}

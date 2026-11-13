@@ -65,6 +65,8 @@ class Settings(BaseSettings):
     right_timeout_s: float = 120.0
     right_temperature: float | None = None
     right_json_mode: bool = False
+    right_effort: str | None = None
+    """For Claude: how hard the model works (low, medium, high, xhigh, max). Unset: its default."""
 
     # Left hemisphere. LEFT_PROVIDER names an entry in providers.left_providers.
     left_provider: str = "auto"
@@ -95,6 +97,16 @@ class Settings(BaseSettings):
     harness_max_steps: int = 6
     harness_policy: str = ""
     harness_check_answers: bool = True
+    harness_lookup: str = ""
+    """Where the answer check looks claims up: wikipedia, searxng or brave. Empty is off."""
+    harness_lookup_url: str | None = None
+    harness_lookup_language: str = "en"
+    harness_memory: bool = False
+    """Keep short notes across conversations. Off by default."""
+    harness_memory_file: str | None = None
+    """Where the notes are kept. Default: .hemisphere/memory.json."""
+    harness_mcp_config: str | None = None
+    """A JSON file of MCP servers whose tools runs may use. See mcp_tools.py."""
 
     _dotenv_files: tuple[Path, ...] = PrivateAttr(default=())
 

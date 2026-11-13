@@ -1,0 +1,34 @@
+name: Bug report
+description: Something does not work as the docs say it should.
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      description: The smallest steps or code that show it. The offline demo or the mock left are ideal if they reproduce it.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `python -c "import hemisphere_harness; print(hemisphere_harness.__version__)"`
+    validations:
+      required: true
+  - type: input
+    id: providers
+    attributes:
+      label: Providers
+      description: RIGHT_PROVIDER / RIGHT_MODEL and LEFT_PROVIDER / LEFT_MODEL, if it involves models.
+  - type: textarea
+    id: trace
+    attributes:
+      label: Trace or error
+      description: The relevant part of the trace or error. Remove API keys and anything private first.
+      render: text

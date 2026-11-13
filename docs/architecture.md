@@ -15,6 +15,8 @@ Each rule below is enforced in one identifiable place.
 | 7 | Every step ends in the right. Reintegration is the only write to the situation. | The end of `Harness.step`. |
 | 8 | A failing left is survivable. A failing right is fatal. | `Harness.step` catches `LeftHemisphereError` only. |
 | 9 | Before the person sees the answer, the left checks its claims and the right takes back what does not hold. | `Harness.check_answer`. |
+| 10 | A tool that is not read-only is never called without a person's sign-off, whichever hemisphere chose it. | `Harness._gate` and `Harness._resolve`, through `_tool_needing_signoff`. |
+| 11 | What the agent remembers across conversations reaches the right only, and only what the left judged relevant. | `Harness._recall`; `WorldState.focus()` leaves memory out. |
 
 Rule 4 depends on the right's own labels. A `Proposal` carries `stakes` and `open_ended`,
 and neither has a default, so the right must say on every step whether left-hemisphere
@@ -117,9 +119,66 @@ stands and the failure is recorded. It is on by default (`HARNESS_CHECK_ANSWERS`
 example and the web UI turn it off when the left is the mock, which answers every yes/no
 question 0.5.
 
-The left judges claims with what it knows. A decision model knows less than a large
-chat model, so treat a "holds" as "not obviously wrong", not as verified. Nothing here
-looks anything up.
+The left judges claims with what it knows, with what the tools returned during the run
+(observed, so evidence), and with what the person said earlier in the conversation (never
+the agent's own answers). A decision model knows less than a large chat model, so on its
+own a "holds" means "not obviously wrong".
+
+**Lookups.** With `Harness(..., searcher=...)` (`HARNESS_LOOKUP`), claims the left did not
+judge to hold are searched for, using a short query the right wrote alongside each claim,
+and the left judges them again with the evidence in view. `ClaimCheck` keeps the first
+probability and the sources. The right revises with the sources and may use what they
+say, but still may not add specifics nothing checked. A failed search finds nothing; a
+failed second pass keeps the first verdicts.
+
+## Memory
+
+`Harness(..., memory=MemoryStore(path))` keeps notes across conversations. Two calls, one
+per hemisphere, in keeping with what each does:
+
+- **Remember, by the right**, after the answer: `RightHemisphere.remember` returns at most
+  three short notes, usually none, never anything sensitive, each marked a `preference`
+  (how the person likes to work: applies to every request) or a `fact` (matters only when
+  a request touches it). Duplicates are skipped.
+- **Recall**, at the start of `run`: every preference, and the facts the left judges
+  relevant, one yes/no question per fact ("would this help with the request?"), seeing
+  only the request. They go into `WorldState.memory`, which only the right sees. If the
+  left fails, the five most recent facts are used.
+
+Preferences skip the left on purpose. Asked whether "prefers short answers" bears on
+"What is proof of stake?", the 4.3B `tev1` said no (0.18): a topical judge is the wrong
+tool for a rule that applies everywhere, and only facts are topical.
+
+## Streaming
+
+When anyone listens to the trace, the answer's draft is streamed as it is written:
+`RightHemisphere.stream` yields pieces, which reach the sink as transient `TraceEvent`s
+(`transient=True`, phase `answer_delta`) and are never stored. If a stream fails part of
+the way, a `{"reset": true}` piece withdraws what was shown and the draft is generated
+whole. The final answer, checked and perhaps revised, is the `report` event as before.
+
+## Tools
+
+`Harness(..., toolbox=...)` gives the agent tools. `WorldState.tools` lists them for the
+right, which may give any option a `tool` and `arguments`. The option's description must
+still say in plain words what the call does, because that is what the left chooses from.
+The policy question shows the left the exact call (`Option.as_action()`), so a gate on
+"refunds above $500" can see the amount.
+
+A committed option that names a tool is carried out by `Toolbox.call` instead of the
+actuator. Its output, cut at 8,000 characters, is the action's output, and the right
+reads it at reintegration. A failing tool, a bad argument or an unknown tool is a failed
+action, never a crash.
+
+Every tool says whether it needs a person's sign-off (`ToolSpec.needs_approval`). For MCP
+servers the default is: read-only tools run freely, everything else needs sign-off. An
+option calling such a tool cannot be committed by the left (`_gate`) or by the right
+(`_resolve`): it goes to `FLAG_HUMAN`, and only `resume` with an approval carries it out. A
+tool the harness does not know is treated as needing sign-off.
+
+`MCPToolbox.connect` starts or reaches every configured server. A server that fails is
+recorded in `errors` and skipped; the others still work. The web UI connects tools for
+each live run and disconnects them before the run reports its outcome.
 
 ## Conversations and sign-off
 

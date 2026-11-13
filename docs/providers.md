@@ -12,6 +12,8 @@ python -m hemisphere_harness      # lists every provider available in this envir
 | `RIGHT_PROVIDER` | Endpoint | Key variable |
 |---|---|---|
 | `openai` (default) | `https://api.openai.com/v1` | `OPENAI_API_KEY` |
+| `anthropic`, `claude` | Anthropic's API, through its SDK | `ANTHROPIC_API_KEY`, or an `ant auth login` profile |
+| `gemini`, `google` | `https://generativelanguage.googleapis.com/v1beta/openai` | `GEMINI_API_KEY` |
 | `nvidia`, `nim` | `https://integrate.api.nvidia.com/v1` | `NVIDIA_API_KEY` |
 | `xai`, `grok` | `https://api.x.ai/v1` | `XAI_API_KEY` |
 | `openrouter` | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` |
@@ -34,6 +36,17 @@ NVIDIA_API_KEY=nvapi-...
 RIGHT_PROVIDER=grok
 RIGHT_MODEL=<a model id from docs.x.ai>
 XAI_API_KEY=xai-...
+
+# Claude, through Anthropic's own SDK: pip install "hemisphere-harness[anthropic]"
+RIGHT_PROVIDER=anthropic
+RIGHT_MODEL=claude-opus-5-5
+ANTHROPIC_API_KEY=sk-ant-...      # or leave it out after `ant auth login`
+# RIGHT_EFFORT=high               # low, medium, high, xhigh, max; unset uses the model's default
+
+# Gemini, through Google's OpenAI-compatible endpoint
+RIGHT_PROVIDER=gemini
+RIGHT_MODEL=<a model id from ai.google.dev>
+GEMINI_API_KEY=...
 
 # A local model through Ollama: no key, nothing leaves the machine
 RIGHT_PROVIDER=ollama
@@ -91,6 +104,17 @@ model, and no fix for it has been tested.
 
 To run a model in-process instead of through a server, write a provider (see below) whose
 `complete` calls it.
+
+### Claude
+
+The `anthropic` provider uses Anthropic's Python SDK rather than an OpenAI-compatible
+shim. Every request is streamed, so long replies stay clear of HTTP timeouts and the
+answer appears as it is written. Thinking is left to the model; `RIGHT_EFFORT` sets how
+hard it works. On the current models (Opus 5.5, Opus 5, Sonnet 5.5, Fable 5.x) it turns
+on Anthropic's server-side refusal fallback: if the model declines a request on safety
+grounds, the API runs it again on a fallback model within the same call. A request that
+is still declined becomes a `RightHemisphereError`. Tested against the SDK with a mock
+transport; not yet with a real key.
 
 ## Left-hemisphere providers
 

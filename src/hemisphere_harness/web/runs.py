@@ -12,7 +12,7 @@ import json
 import logging
 import os
 import secrets
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, Self
@@ -26,8 +26,26 @@ from ..harness import Harness
 from ..left import ExperimentalLLMLeft, LeftHemisphere, MockLeftHemisphere
 from ..providers import build_left, build_right
 from ..right import RightHemisphere, ScriptedRightHemisphere
-from ..schemas import HumanDecision, Option, RunResult, Turn, WorldState
-from ..trace import TraceEvent
+from ..left.base import LeftState
+from ..schemas import (
+    Decision,
+    Evaluation,
+    HumanDecision,
+    LeftResult,
+    Option,
+    Plan,
+    Proposal,
+    Question,
+    Reintegration,
+    RunResult,
+    StepRecord,
+    Turn,
+    WorldState,
+)
+from ..lookup import Searcher, searcher_from_settings
+from ..mcp_tools import MCPToolbox, toolbox_from_settings
+from ..memory import MemoryStore
+from ..trace import Actor, TraceEvent
 
 log = logging.getLogger(__name__)
 
@@ -83,6 +101,8 @@ class Run(BaseModel):
     error: str | None = None
     report: str = ""
     events: list[TraceEvent] = Field(default_factory=list)
+    tools: list[str] = Field(default_factory=list)
+    """The tools this run had, if any were connected."""
     state: WorldState | None = None
     """The final world state, kept so that a stopped run can be resumed."""
 
@@ -142,16 +162,77 @@ class RunStore:
         return sorted(runs, key=lambda run: run.created)
 
 
+class PacedRight(ScriptedRightHemisphere):
+    """The offline demo's right, slowed to a watchable pace, its answer streamed word by word."""
+
+    def __init__(self, pace: float, **script: Any) -> None:
+        super().__init__(**script)
+        self._pace = pace
+
+    async def plan(self, state: WorldState) -> Plan:
+        await asyncio.sleep(self._pace)
+        return await super().plan(state)
+
+    async def propose(self, state: WorldState) -> Proposal:
+        await asyncio.sleep(self._pace)
+        return await super().propose(state)
+
+    async def evaluate(self, state: WorldState, proposal: Proposal, decision: Decision) -> Evaluation:
+        await asyncio.sleep(self._pace)
+        return await super().evaluate(state, proposal, decision)
+
+    async def reintegrate(self, state: WorldState, step: StepRecord) -> Reintegration:
+        await asyncio.sleep(self._pace)
+        return await super().reintegrate(state, step)
+
+    async def stream(self, prompt: str, state: WorldState | None = None) -> AsyncIterator[str]:
+        text = await self.generate(prompt, state)
+        for word in text.split(" "):
+            await asyncio.sleep(self._pace / 12)
+            yield word + " "
+
+
+class PacedLeft(MockLeftHemisphere):
+    def __init__(self, pace: float, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._pace = pace
+
+    async def _decide(self, state: LeftState, questions: Mapping[str, Question]) -> LeftResult:
+        await asyncio.sleep(self._pace / 2)
+        return await super()._decide(state, questions)
+
+
+def _tools_event(toolbox: MCPToolbox) -> TraceEvent:
+    names = [tool.name for tool in toolbox.tools]
+    summary = f"{len(names)} tool(s) connected" + (f"; {len(toolbox.errors)} server(s) failed" if toolbox.errors else "")
+    return TraceEvent(
+        actor=Actor.HARNESS,
+        phase="tools",
+        summary=summary,
+        details=[f"{server}: {error}" for server, error in toolbox.errors.items()],
+        data={"tools": [tool.model_dump(mode="json") for tool in toolbox.tools], "errors": toolbox.errors},
+    )
+
+
 def _new_id() -> str:
     return datetime.now(UTC).strftime("%Y%m%d-%H%M%S-") + secrets.token_hex(3)
 
 
 class RunManager:
-    def __init__(self, store: RunStore, settings: Callable[[], Settings]) -> None:
+    def __init__(self, store: RunStore, settings: Callable[[], Settings], *, demo_pace_s: float = 0.0) -> None:
         self.store = store
         self._settings = settings
+        self._pace = demo_pace_s
         self._tasks: dict[str, asyncio.Task[None]] = {}
-        self._listeners: dict[str, list[asyncio.Queue[tuple[int, TraceEvent] | None]]] = {}
+        self._listeners: dict[str, list[asyncio.Queue[tuple[int | None, TraceEvent] | None]]] = {}
+
+    def memory(self, settings: Settings | None = None) -> MemoryStore:
+        """The memory file: HARNESS_MEMORY_FILE, or memory.json next to the run history."""
+        settings = settings or self._settings()
+        return MemoryStore(settings.harness_memory_file or self.store.directory.parent / "memory.json")
+
+    def _memory_for_run(self, settings: Settings, offline: bool) -> MemoryStore | None:
+        return None if offline or not settings.harness_memory else self.memory(settings)
 
     def start(self, request: RunRequest) -> Run:
         """Build both hemispheres and start a run: a first message, or a reply in a conversation.
@@ -184,8 +265,8 @@ class RunManager:
             if isinstance(left, MockLeftHemisphere):
                 config.check_answers = False  # it would call every claim unsure
         elif ticket:
-            right = ScriptedRightHemisphere(**ticket.right)
-            left = MockLeftHemisphere(script=ticket.left)
+            right = PacedRight(self._pace, **ticket.right)
+            left = PacedLeft(self._pace, script=ticket.left)
             config.policy = config.policy or ticket.policy
         else:
             raise ConfigError(
@@ -197,7 +278,10 @@ class RunManager:
             settings, right, left, config, goal=goal, context=context, demo=request.demo, offline=not settings.right_model
         )
         outcomes = ticket.outcomes if ticket else {}
-        return self._launch(run, right, left, config, outcomes, lambda harness: harness.run(goal, context=context))
+        tools = None if run.offline else settings.harness_mcp_config
+        searcher = None if run.offline else searcher_from_settings(settings)
+        memory = self._memory_for_run(settings, run.offline)
+        return self._launch(run, right, left, config, outcomes, lambda harness: harness.run(goal, context=context), tools, searcher, memory)
 
     def _reply(self, request: RunRequest, settings: Settings) -> Run:
         earlier = self.store.conversation(request.conversation_id or "")
@@ -223,7 +307,8 @@ class RunManager:
             conversation_id=first.conversation_id,
         )  # fmt: skip
         return self._launch(
-            run, right, left, config, {}, lambda harness: harness.run(message, context=first.context, conversation=turns)
+            run, right, left, config, {}, lambda harness: harness.run(message, context=first.context, conversation=turns),
+            settings.harness_mcp_config, searcher_from_settings(settings), self._memory_for_run(settings, False),
         )
 
     def resume(self, run_id: str, request: ResumeRequest) -> Run:
@@ -255,7 +340,7 @@ class RunManager:
             if isinstance(left, MockLeftHemisphere):
                 config.check_answers = False
         elif ticket and ticket.after_signoff and request.approve:
-            right, left = ScriptedRightHemisphere(**ticket.after_signoff), MockLeftHemisphere()
+            right, left = PacedRight(self._pace, **ticket.after_signoff), PacedLeft(self._pace)
         elif ticket:
             raise ConfigError(
                 "The offline demo is scripted only for an approval. Set up a right hemisphere in "
@@ -270,7 +355,10 @@ class RunManager:
             offline=not settings.right_model, conversation_id=stopped.conversation_id, message=said, resumed_from=stopped.id,
         )  # fmt: skip
         outcomes = ticket.outcomes if ticket else {}
-        return self._launch(run, right, left, config, outcomes, lambda harness: harness.resume(state, decision))
+        tools = None if run.offline else settings.harness_mcp_config
+        searcher = None if run.offline else searcher_from_settings(settings)
+        memory = self._memory_for_run(settings, run.offline)
+        return self._launch(run, right, left, config, outcomes, lambda harness: harness.resume(state, decision), tools, searcher, memory)
 
     def _ensure_idle(self, conversation: list[Run]) -> None:
         if any(self.is_running(run.id) for run in conversation):
@@ -327,11 +415,14 @@ class RunManager:
         config: HarnessConfig,
         outcomes: dict[str, str],
         go: Callable[[Harness], Awaitable[RunResult]],
+        tools: str | None = None,
+        searcher: Searcher | None = None,
+        memory: MemoryStore | None = None,
     ) -> Run:
         self.store.runs[run.id] = run
         self.store.save(run)
         self._listeners[run.id] = []
-        task = asyncio.get_running_loop().create_task(self._execute(run, right, left, config, outcomes, go))
+        task = asyncio.get_running_loop().create_task(self._execute(run, right, left, config, outcomes, go, tools, searcher, memory))
         self._tasks[run.id] = task
         # A done-callback, not a `finally`: a task cancelled before it first runs never
         # enters its coroutine, and the run would otherwise stay "running" for ever.
@@ -346,26 +437,50 @@ class RunManager:
         config: HarnessConfig,
         outcomes: dict[str, str],
         go: Callable[[Harness], Awaitable[RunResult]],
+        tools: str | None = None,
+        searcher: Searcher | None = None,
+        memory: MemoryStore | None = None,
     ) -> None:
         async def simulate(option: Option, state: WorldState) -> str:
             return outcomes.get(option.id, f"(simulated) {option.description}")
 
         def on_event(event: TraceEvent) -> None:
+            if event.transient:  # a live update, such as a piece of the answer: shown, not kept
+                self._publish(run.id, (None, event))
+                return
             run.events.append(event)
             self._publish(run.id, (len(run.events) - 1, event))
             self.store.save(run)
 
+        # The outcome is recorded only after the tools are disconnected: a run that says it
+        # is finished must not still hold a server process.
+        outcome: dict[str, Any]
+        toolbox: MCPToolbox | None = None
         try:
-            async with Harness(right, left, config=config, act=simulate, on_event=on_event) as harness:
+            # Tools are connected for this run only, inside its task, and closed when it ends.
+            toolbox = await toolbox_from_settings(tools, log_dir=self.store.directory.parent)
+            if toolbox is not None:
+                run.tools = [tool.name for tool in toolbox.tools]
+                on_event(_tools_event(toolbox))
+            async with Harness(
+                right, left, config=config, act=simulate, on_event=on_event, toolbox=toolbox, searcher=searcher, memory=memory
+            ) as harness:
                 result = await go(harness)
-            run.status, run.report, run.state = result.status.value, result.report, result.state
+            outcome = {"status": result.status.value, "report": result.report, "state": result.state}
         except asyncio.CancelledError:
-            run.status, run.error = "cancelled", "Stopped from the web UI."
+            outcome = {"status": "cancelled", "error": "Stopped from the web UI."}
         except HarnessError as exc:
-            run.status, run.error = "failed", str(exc)
+            outcome = {"status": "failed", "error": str(exc)}
         except Exception as exc:  # report any crash in the UI rather than losing the run
             log.exception("run %s crashed", run.id)
-            run.status, run.error = "failed", f"{type(exc).__name__}: {exc}"
+            outcome = {"status": "failed", "error": f"{type(exc).__name__}: {exc}"}
+        finally:
+            if toolbox is not None:
+                await toolbox.aclose()
+            if searcher is not None:
+                await searcher.aclose()
+        for key, value in outcome.items():
+            setattr(run, key, value)
 
     def _finish(self, run: Run, right: RightHemisphere, left: LeftHemisphere) -> None:
         if run.status == "running":  # stopped before the harness started, so nothing closed them
@@ -389,10 +504,13 @@ class RunManager:
     def is_running(self, run_id: str) -> bool:
         return run_id in self._tasks
 
-    async def events(self, run_id: str, after: int = -1) -> AsyncIterator[tuple[int, TraceEvent]]:
-        """Every event after index `after`, then live ones until the run ends."""
+    async def events(self, run_id: str, after: int = -1) -> AsyncIterator[tuple[int | None, TraceEvent]]:
+        """Every event after index `after`, then live ones until the run ends.
+
+        Live updates that are not kept (index None) come through only while connected.
+        """
         run = self.store.runs[run_id]
-        queue: asyncio.Queue[tuple[int, TraceEvent] | None] = asyncio.Queue()
+        queue: asyncio.Queue[tuple[int | None, TraceEvent] | None] = asyncio.Queue()
         listening = run_id in self._listeners
         if listening:
             self._listeners[run_id].append(queue)
@@ -406,14 +524,17 @@ class RunManager:
                 item = await queue.get()
                 if item is None:
                     break
-                if item[0] > sent:
+                position = item[0]
+                if position is None:
                     yield item
-                    sent = item[0]
+                elif position > sent:
+                    yield item
+                    sent = position
         finally:
             if listening and queue in self._listeners.get(run_id, []):
                 self._listeners[run_id].remove(queue)
 
-    def _publish(self, run_id: str, item: tuple[int, TraceEvent] | None) -> None:
+    def _publish(self, run_id: str, item: tuple[int | None, TraceEvent] | None) -> None:
         for queue in self._listeners.get(run_id, []):
             queue.put_nowait(item)
 
