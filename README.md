@@ -83,7 +83,7 @@ The example never touches a real system. Its actions are simulated.
 
 ## Web UI
 
-![The lockout demo in the web UI: the run drawn as a network from the request to the answer, the work folded into one line, and the answer after the check corrected one claim](docs/images/web-run.png)
+![The lockout demo in the web UI: the run drawn as a network from the request to the answer, the work folded into one line, and the answer after the check corrected one claim](https://raw.githubusercontent.com/Zaenus/hemisphere-harness/main/docs/images/web-run.png)
 
 ```bash
 pip install -e ".[web]"         # already included in .[dev]
@@ -304,7 +304,7 @@ The left hemisphere is a decision model. Pick one with `LEFT_PROVIDER`.
 not calibrated, so the thresholds below do not mean for it what they mean for a decision
 model. It is never selected automatically, it warns when it is constructed, and every
 trace line it produces says `experimental`. Read
-[its section in docs/providers.md](docs/providers.md#experimental-a-chat-model-as-the-left-hemisphere)
+[its section in docs/providers.md](https://github.com/Zaenus/hemisphere-harness/blob/main/docs/providers.md#experimental-a-chat-model-as-the-left-hemisphere)
 before using it.
 
 `python -m hemisphere_harness` prints both lists for your environment, including any
@@ -320,7 +320,7 @@ Adding a provider is meant to be easy:
   `hemisphere_harness.right` or `hemisphere_harness.left` group and becomes selectable
   by name once installed.
 
-[docs/providers.md](docs/providers.md) covers each of these, and how keys and endpoints
+[docs/providers.md](https://github.com/Zaenus/hemisphere-harness/blob/main/docs/providers.md) covers each of these, and how keys and endpoints
 are resolved.
 
 ## Using it in code
@@ -453,6 +453,7 @@ tests/
 docs/architecture.md        the contract in detail, and where to extend
 docs/providers.md           using and adding providers
 .github/workflows/ci.yml    tests, types and the example, on every push and pull request
+.github/workflows/publish.yml  builds the package and uploads it to PyPI when a release is published
 CONTRIBUTING.md
 LICENSE                     MIT
 ```
@@ -494,8 +495,8 @@ This is a first version, kept small on purpose.
 ## Contributing
 
 Contributions are welcome, and a new provider is the easiest place to start. See
-[CONTRIBUTING.md](CONTRIBUTING.md).
+[CONTRIBUTING.md](https://github.com/Zaenus/hemisphere-harness/blob/main/CONTRIBUTING.md).
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE](https://github.com/Zaenus/hemisphere-harness/blob/main/LICENSE).
