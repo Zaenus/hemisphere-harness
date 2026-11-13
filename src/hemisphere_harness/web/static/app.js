@@ -22,7 +22,7 @@ function h(tag, props, ...children) {
   return el;
 }
 
-function append(el, children) {
+function append(el, ...children) {
   for (const child of children.flat(Infinity)) {
     if (child === null || child === undefined || child === false) continue;
     el.append(child instanceof Node ? child : document.createTextNode(String(child)));
@@ -659,7 +659,7 @@ class RunView {
     const reportEvent = run.events.find((event) => event.phase === "report");
     const report = reportEvent ? (reportEvent.data.report ?? reportEvent.summary) : run.report;
     clear(this.answer);
-    if (report) this.answer.append(renderMarkdown(report));
+    if (report) this.answer.append(safeMarkdown(report));
     else if (running) this.answer.append(h("div", { class: "typing", "aria-label": "Working" }, h("span"), h("span"), h("span")));
     else if (run.status === "cancelled") this.answer.append(h("p", { class: "muted" }, "Stopped before the right hemisphere wrote its answer."));
     if (run.error && run.status === "failed") {
@@ -765,7 +765,14 @@ class RunView {
 
   add(event) {
     if (event.phase === "end" || event.phase === "report") return; // the report is the answer
-    this.container(event.step).append(renderEvent(event, this.run));
+    let card;
+    try {
+      card = renderEvent(event, this.run);
+    } catch (error) {
+      console.error("could not draw a step", event, error);
+      card = h("div", { class: `event ${event.actor}` }, h("div", { class: "text" }, event.summary));
+    }
+    this.container(event.step).append(card);
   }
 }
 
@@ -804,6 +811,16 @@ function workSummary(run) {
     line += ` · ${n} claim${n === 1 ? "" : "s"} checked: ${verdicts.join(", ")}${revised ? ", answer revised" : ""}`;
   }
   return line;
+}
+
+// Markdown that cannot take the page down: if formatting fails, show the plain text.
+function safeMarkdown(text) {
+  try {
+    return renderMarkdown(text);
+  } catch (error) {
+    console.error("could not format an answer", error);
+    return h("div", { class: "md" }, h("p", { class: "text" }, text));
+  }
 }
 
 // Markdown for the answer, built as DOM nodes. Never parsed as HTML.
@@ -1065,7 +1082,7 @@ function renderEvent(event, run) {
       return card(null,
         h("div", { class: "sub" }, `Drafted the answer and listed ${claims.length} factual claim${claims.length === 1 ? "" : "s"} for the left to check.`),
         h("details", { class: "more" }, h("summary", {}, icon("chevron"), "The draft, before the check"),
-          h("div", { class: "draft-box" }, renderMarkdown(d.draft))));
+          h("div", { class: "draft-box" }, safeMarkdown(d.draft))));
     }
     case "check": {
       if (d.error !== undefined) {

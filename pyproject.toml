@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "hemisphere-harness"
-version = "0.1.0"
+version = "0.1.1"
 description = "An agent harness modelled on McGilchrist's Master and Emissary: a generative right hemisphere leads, a calibrated decision model serves."
 readme = "README.md"
 license = "MIT"
