@@ -153,7 +153,10 @@ def reintegrate_prompt(state: WorldState, step: StepRecord) -> str:
     lines = ["THE STEP JUST FINISHED", _render_options(step.proposal, decision)]
     if step.action is not None:
         result = "succeeded" if step.action.ok else "FAILED"
-        lines.append(f"The {decision.committed_by} hemisphere committed to '{decision.option_id}'.")
+        if decision.committed_by == "human":
+            lines.append(f"A human signed off '{decision.option_id}', and it was carried out.")
+        else:
+            lines.append(f"The {decision.committed_by} hemisphere committed to '{decision.option_id}'.")
         lines.append(f"The action {result}: {step.action.output}")
     else:
         lines.append(f"Nothing was done. Outcome: {decision.outcome}.")
@@ -230,15 +233,40 @@ def revise_prompt(state: WorldState, answer: str, checks: list[ClaimCheck]) -> s
 
 
 def _request(state: WorldState) -> str:
-    sections = [f"REQUEST\n{state.goal}"]
+    sections = []
+    if state.conversation:
+        sections.append(f"CONVERSATION SO FAR (oldest first)\n{render_conversation(state)}")
+    sections.append(f"REQUEST\n{state.goal}")
     if state.context:
         sections.append(f"CONTEXT\n{state.context}")
     return "\n\n".join(sections)
 
 
+MAX_TURNS = 8
+"""Earlier exchanges shown to the right. Older ones drop out of its view."""
+MAX_ANSWER_CHARS = 2_000
+
+
+def render_conversation(state: WorldState) -> str:
+    """Earlier exchanges, oldest first, with long answers shortened."""
+    lines = []
+    shown = state.conversation[-MAX_TURNS:]
+    if len(state.conversation) > len(shown):
+        lines.append(f"({len(state.conversation) - len(shown)} earlier exchange(s) not shown)")
+    for turn in shown:
+        answer = turn.answer
+        if len(answer) > MAX_ANSWER_CHARS:
+            answer = answer[:MAX_ANSWER_CHARS].rstrip() + " […]"
+        lines.append(f"Person: {turn.request}\nYou: {answer}")
+    return "\n\n".join(lines)
+
+
 def render_state(state: WorldState) -> str:
     """The right hemisphere's view: everything. Compare WorldState.focus(), which the left gets."""
-    sections = [("GOAL", state.goal)]
+    sections = []
+    if state.conversation:
+        sections.append(("CONVERSATION SO FAR (oldest first)", render_conversation(state)))
+    sections.append(("GOAL (the person's latest message)" if state.conversation else "GOAL", state.goal))
     if state.context:
         sections.append(("CONTEXT", state.context))
     if state.situation:

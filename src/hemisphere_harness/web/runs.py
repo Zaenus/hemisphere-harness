@@ -1,8 +1,10 @@
 """Runs started from the web UI: launched in the background, streamed live, kept on disk.
 
-Each run is one `Harness.run`, built from the settings as they are when it starts, so a
-change saved in the UI applies to the next run without a restart. Actions are always
-simulated: the UI has no actuator that touches a real system.
+Each run is one `Harness.run`, or one `Harness.resume` after a person's sign-off, built
+from the settings as they are when it starts, so a change saved in the UI applies to the
+next run without a restart. Runs are grouped into conversations: a reply is a new run that
+carries the earlier exchanges. Actions are always simulated: the UI has no actuator that
+touches a real system.
 """
 
 import asyncio
@@ -10,12 +12,12 @@ import json
 import logging
 import os
 import secrets
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Self
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from ..config import HarnessConfig, Settings
 from ..errors import ConfigError, HarnessError
@@ -24,7 +26,7 @@ from ..harness import Harness
 from ..left import ExperimentalLLMLeft, LeftHemisphere, MockLeftHemisphere
 from ..providers import build_left, build_right
 from ..right import RightHemisphere, ScriptedRightHemisphere
-from ..schemas import Option, WorldState
+from ..schemas import HumanDecision, Option, RunResult, Turn, WorldState
 from ..trace import TraceEvent
 
 log = logging.getLogger(__name__)
@@ -34,6 +36,10 @@ DEMOS: dict[str, Ticket] = {"lockout": LOCKOUT, "refund": REFUND}
 Status = Literal["running", "done", "needs_human", "max_steps", "failed", "cancelled"]
 
 
+class ConflictError(ConfigError):
+    """The request is valid, but not now: something is running, or nothing is waiting."""
+
+
 class RunRequest(BaseModel):
     goal: str = Field(default="", max_length=20_000)
     context: str = Field(default="", max_length=50_000)
@@ -41,13 +47,29 @@ class RunRequest(BaseModel):
     """None uses HARNESS_POLICY. An empty string turns the policy gate off for this run."""
     demo: Literal["lockout", "refund"] | None = None
     max_steps: int | None = Field(default=None, ge=1, le=50)
+    conversation_id: str | None = None
+    """Set to reply in an existing conversation. Its context and policy carry over."""
+
+
+class ResumeRequest(BaseModel):
+    """A person's decision on a run that stopped for a human."""
+
+    approve: bool
+    option_id: str | None = None
+    note: str = Field(default="", max_length=5_000)
 
 
 class Run(BaseModel):
     id: str
+    conversation_id: str = ""
+    """The conversation this run belongs to. A first message starts one with its own id."""
     created: datetime
     finished: datetime | None = None
     goal: str
+    message: str = ""
+    """What the person said for this run: the goal, a reply, or their sign-off."""
+    resumed_from: str | None = None
+    """The stopped run this one continues, if it continues one."""
     context: str = ""
     policy: str = ""
     demo: str | None = None
@@ -61,9 +83,26 @@ class Run(BaseModel):
     error: str | None = None
     report: str = ""
     events: list[TraceEvent] = Field(default_factory=list)
+    state: WorldState | None = None
+    """The final world state, kept so that a stopped run can be resumed."""
+
+    @model_validator(mode="after")
+    def _defaults(self) -> Self:
+        # Runs saved before conversations existed are conversations of one.
+        self.conversation_id = self.conversation_id or self.id
+        self.message = self.message or self.goal
+        return self
+
+    @property
+    def can_resume(self) -> bool:
+        """Whether a person's sign-off can continue this run. Runs saved before resuming existed cannot."""
+        return self.status == "needs_human" and self.state is not None and bool(self.state.history)
 
     def summary(self) -> dict[str, Any]:
-        return self.model_dump(mode="json", include={"id", "created", "finished", "goal", "status", "demo", "offline"})
+        return self.model_dump(
+            mode="json",
+            include={"id", "conversation_id", "created", "finished", "goal", "message", "status", "demo", "offline"},
+        )
 
 
 class RunStore:
@@ -97,6 +136,15 @@ class RunStore:
     def newest_first(self) -> list[Run]:
         return sorted(self.runs.values(), key=lambda run: run.created, reverse=True)
 
+    def conversation(self, conversation_id: str) -> list[Run]:
+        """Every run in a conversation, oldest first."""
+        runs = [run for run in self.runs.values() if run.conversation_id == conversation_id]
+        return sorted(runs, key=lambda run: run.created)
+
+
+def _new_id() -> str:
+    return datetime.now(UTC).strftime("%Y%m%d-%H%M%S-") + secrets.token_hex(3)
+
 
 class RunManager:
     def __init__(self, store: RunStore, settings: Callable[[], Settings]) -> None:
@@ -106,8 +154,14 @@ class RunManager:
         self._listeners: dict[str, list[asyncio.Queue[tuple[int, TraceEvent] | None]]] = {}
 
     def start(self, request: RunRequest) -> Run:
-        """Build both hemispheres and start the run. Raises ConfigError if they cannot be built."""
+        """Build both hemispheres and start a run: a first message, or a reply in a conversation.
+
+        Raises ConfigError if the hemispheres cannot be built or the request makes no sense.
+        """
         settings = self._settings()
+        if request.conversation_id:
+            return self._reply(request, settings)
+
         ticket = DEMOS[request.demo] if request.demo else None
         goal = ticket.goal if ticket else request.goal.strip()
         context = ticket.context if ticket else request.context.strip()
@@ -118,17 +172,8 @@ class RunManager:
         if request.max_steps:
             config.max_steps = request.max_steps
 
-        right: RightHemisphere
-        left: LeftHemisphere
         if settings.right_model:
-            right = build_right(settings)
-            try:
-                left = build_left(settings)
-            except BaseException:
-                asyncio.get_running_loop().create_task(right.aclose())
-                raise
-            offline = False
-            right_label = f"{right.name} · {settings.right_model}"
+            right, left = self._build_live(settings)
             if ticket:
                 # As in the command-line example: a mock left answers every policy question
                 # 0.5, so the demo's policy applies only when something can judge it.
@@ -141,8 +186,6 @@ class RunManager:
         elif ticket:
             right = ScriptedRightHemisphere(**ticket.right)
             left = MockLeftHemisphere(script=ticket.left)
-            offline = True
-            right_label = "scripted (offline demo)"
             config.policy = config.policy or ticket.policy
         else:
             raise ConfigError(
@@ -150,29 +193,145 @@ class RunManager:
                 "or try one of the offline demos."
             )
 
-        left_model = settings.jev_model if left.name == "jev" else settings.left_model
-        left_label = "mock (scripted)" if offline else left.name + (f" · {left_model}" if left_model else "")
+        run = self._new_run(
+            settings, right, left, config, goal=goal, context=context, demo=request.demo, offline=not settings.right_model
+        )
+        outcomes = ticket.outcomes if ticket else {}
+        return self._launch(run, right, left, config, outcomes, lambda harness: harness.run(goal, context=context))
 
-        run = Run(
-            id=datetime.now(UTC).strftime("%Y%m%d-%H%M%S-") + secrets.token_hex(3),
+    def _reply(self, request: RunRequest, settings: Settings) -> Run:
+        earlier = self.store.conversation(request.conversation_id or "")
+        if not earlier:
+            raise ConfigError("No such conversation.")
+        self._ensure_idle(earlier)
+        message = request.goal.strip()
+        if not message:
+            raise ConfigError("Write a reply.")
+        if not settings.right_model:
+            raise ConfigError("Replies need a right hemisphere. Choose a provider and a model in Settings.")
+
+        first = earlier[0]
+        config = first.config.model_copy()
+        if request.max_steps:
+            config.max_steps = request.max_steps
+        right, left = self._build_live(settings)
+        config.check_answers = settings.harness_check_answers and not isinstance(left, MockLeftHemisphere)
+        turns = [Turn(request=run.message, answer=run.report) for run in earlier if run.report]
+
+        run = self._new_run(
+            settings, right, left, config, goal=message, context=first.context, demo=None, offline=False,
+            conversation_id=first.conversation_id,
+        )  # fmt: skip
+        return self._launch(
+            run, right, left, config, {}, lambda harness: harness.run(message, context=first.context, conversation=turns)
+        )
+
+    def resume(self, run_id: str, request: ResumeRequest) -> Run:
+        """Continue a run that stopped for a human, as a new run in the same conversation."""
+        stopped = self.store.runs.get(run_id)
+        if stopped is None:
+            raise ConfigError("No such run.")
+        conversation = self.store.conversation(stopped.conversation_id)
+        self._ensure_idle(conversation)
+        if stopped.status != "needs_human" or stopped.state is None or not stopped.state.history:
+            raise ConflictError("This run is not waiting for a decision.")
+        if conversation[-1].id != stopped.id:
+            raise ConflictError("The conversation has moved on since this run stopped.")
+
+        options = stopped.state.history[-1].proposal.options
+        option = next((o for o in options if o.id == request.option_id), None)
+        if request.approve and option is None:
+            raise ConfigError(f"'{request.option_id}' is not one of: {', '.join(o.id for o in options)}")
+        decision = HumanDecision(approve=request.approve, option_id=request.option_id if request.approve else None, note=request.note)
+        said = f"Approved: {option.description}" if option is not None and request.approve else "Rejected those options"
+        if decision.note.strip():
+            said += f" — {decision.note.strip()}"
+
+        settings = self._settings()
+        ticket = DEMOS.get(stopped.demo or "")
+        config = stopped.config.model_copy()
+        if settings.right_model:
+            right, left = self._build_live(settings)
+            if isinstance(left, MockLeftHemisphere):
+                config.check_answers = False
+        elif ticket and ticket.after_signoff and request.approve:
+            right, left = ScriptedRightHemisphere(**ticket.after_signoff), MockLeftHemisphere()
+        elif ticket:
+            raise ConfigError(
+                "The offline demo is scripted only for an approval. Set up a right hemisphere in "
+                "Settings to see what happens after a rejection."
+            )
+        else:
+            raise ConfigError("Continuing needs a right hemisphere. Choose a provider and a model in Settings.")
+
+        state = stopped.state
+        run = self._new_run(
+            settings, right, left, config, goal=stopped.goal, context=stopped.context, demo=stopped.demo,
+            offline=not settings.right_model, conversation_id=stopped.conversation_id, message=said, resumed_from=stopped.id,
+        )  # fmt: skip
+        outcomes = ticket.outcomes if ticket else {}
+        return self._launch(run, right, left, config, outcomes, lambda harness: harness.resume(state, decision))
+
+    def _ensure_idle(self, conversation: list[Run]) -> None:
+        if any(self.is_running(run.id) for run in conversation):
+            raise ConflictError("Wait for the current run to finish, or stop it, before replying.")
+
+    def _build_live(self, settings: Settings) -> tuple[RightHemisphere, LeftHemisphere]:
+        right = build_right(settings)
+        try:
+            left = build_left(settings)
+        except BaseException:
+            asyncio.get_running_loop().create_task(right.aclose())
+            raise
+        return right, left
+
+    def _new_run(
+        self,
+        settings: Settings,
+        right: RightHemisphere,
+        left: LeftHemisphere,
+        config: HarnessConfig,
+        *,
+        goal: str,
+        context: str,
+        demo: str | None,
+        offline: bool,
+        conversation_id: str = "",
+        message: str = "",
+        resumed_from: str | None = None,
+    ) -> Run:
+        left_model = settings.jev_model if left.name == "jev" else settings.left_model
+        return Run(
+            id=_new_id(),
+            conversation_id=conversation_id,
             created=datetime.now(UTC),
             goal=goal,
+            message=message,
+            resumed_from=resumed_from,
             context=context,
             policy=config.policy,
-            demo=request.demo,
+            demo=demo,
             offline=offline,
-            right=right_label,
-            left=left_label,
+            right="scripted (offline demo)" if offline else f"{right.name} · {settings.right_model}",
+            left="mock (scripted)" if offline else left.name + (f" · {left_model}" if left_model else ""),
             left_experimental=isinstance(left, ExperimentalLLMLeft),
             left_is_mock=isinstance(left, MockLeftHemisphere),
             config=config,
         )
+
+    def _launch(
+        self,
+        run: Run,
+        right: RightHemisphere,
+        left: LeftHemisphere,
+        config: HarnessConfig,
+        outcomes: dict[str, str],
+        go: Callable[[Harness], Awaitable[RunResult]],
+    ) -> Run:
         self.store.runs[run.id] = run
         self.store.save(run)
         self._listeners[run.id] = []
-        task = asyncio.get_running_loop().create_task(
-            self._execute(run, right, left, config, ticket.outcomes if ticket else {})
-        )
+        task = asyncio.get_running_loop().create_task(self._execute(run, right, left, config, outcomes, go))
         self._tasks[run.id] = task
         # A done-callback, not a `finally`: a task cancelled before it first runs never
         # enters its coroutine, and the run would otherwise stay "running" for ever.
@@ -186,6 +345,7 @@ class RunManager:
         left: LeftHemisphere,
         config: HarnessConfig,
         outcomes: dict[str, str],
+        go: Callable[[Harness], Awaitable[RunResult]],
     ) -> None:
         async def simulate(option: Option, state: WorldState) -> str:
             return outcomes.get(option.id, f"(simulated) {option.description}")
@@ -197,8 +357,8 @@ class RunManager:
 
         try:
             async with Harness(right, left, config=config, act=simulate, on_event=on_event) as harness:
-                result = await harness.run(run.goal, context=run.context)
-            run.status, run.report = result.status.value, result.report
+                result = await go(harness)
+            run.status, run.report, run.state = result.status.value, result.report, result.state
         except asyncio.CancelledError:
             run.status, run.error = "cancelled", "Stopped from the web UI."
         except HarnessError as exc:

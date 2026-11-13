@@ -199,24 +199,40 @@ async function refreshRuns() {
   renderRunList();
 }
 
+// Runs grouped into conversations, most recent activity first.
+function conversations() {
+  const groups = new Map();
+  for (const run of state.runs) {
+    const id = run.conversation_id || run.id;
+    if (!groups.has(id)) groups.set(id, []);
+    groups.get(id).push(run);
+  }
+  return [...groups.entries()]
+    .map(([id, runs]) => {
+      runs.sort((a, b) => a.created.localeCompare(b.created));
+      return { id, first: runs[0], last: runs[runs.length - 1], count: runs.length };
+    })
+    .sort((a, b) => b.last.created.localeCompare(a.last.created));
+}
+
 function renderRunList() {
   const list = clear(document.getElementById("run-list"));
   if (!state.runs.length) {
-    list.append(h("div", { class: "empty" }, "No runs yet."));
+    list.append(h("div", { class: "empty" }, "No conversations yet."));
     return;
   }
-  const current = state.run && state.run.id;
-  for (const run of state.runs) {
+  for (const c of conversations()) {
     list.append(
       h("button", {
-        class: `run-item ${run.id === current ? "active" : ""}`,
+        class: `run-item ${c.id === state.conversationId ? "active" : ""}`,
         type: "button",
-        onclick: () => { location.hash = `#/run/${run.id}`; closeSidebar(); },
+        onclick: () => { location.hash = `#/c/${c.id}`; closeSidebar(); },
       },
-        h("span", { class: `dot ${run.status}` }),
+        h("span", { class: `dot ${c.last.status}` }),
         h("span", {},
-          h("div", { class: "goal" }, run.goal),
-          h("div", { class: "when" }, relativeTime(run.created), run.demo ? " · demo" : ""))),
+          h("div", { class: "goal" }, c.first.message || c.first.goal),
+          h("div", { class: "when" }, relativeTime(c.last.created),
+            c.count > 1 ? ` · ${c.count} messages` : "", c.first.demo ? " · demo" : ""))),
     );
   }
 }
@@ -230,7 +246,7 @@ function closeSidebar() {
 
 function showComposer(prefill = null) {
   closeStream();
-  state.run = null;
+  state.conversationId = null;
   state.view = "composer";
   renderRunList();
   const s = state.status || { right: {}, left: {} };
@@ -268,7 +284,7 @@ function showComposer(prefill = null) {
         method: "POST",
         body: { goal: goal.value, context: context.value, policy: policy.value, max_steps: Number(maxSteps.value) || null },
       });
-      location.hash = `#/run/${run.id}`;
+      location.hash = `#/c/${run.conversation_id}`;
       refreshRuns();
     } catch (error) {
       if (error.status !== 401) toast(error.message, "error");
@@ -333,7 +349,7 @@ function showComposer(prefill = null) {
 async function startDemo(key) {
   try {
     const run = await api("/api/runs", { method: "POST", body: { demo: key } });
-    location.hash = `#/run/${run.id}`;
+    location.hash = `#/c/${run.conversation_id}`;
     refreshRuns();
   } catch (error) {
     if (error.status !== 401) toast(error.message, "error");
@@ -354,10 +370,12 @@ const PHASES = {
   draft: "Drafts the answer",
   check: "Checks the claims",
   revise: "Revises the answer",
+  approve: "Sign off",
+  reject: "Reject",
   report: "Report",
   end: "End",
 };
-const WHO = { right: "Right · Master", left: "Left · Emissary", harness: "Harness" };
+const WHO = { right: "Right · Master", left: "Left · Emissary", harness: "Harness", human: "You" };
 const STATUS = {
   running: "Running",
   done: "Done",
@@ -375,23 +393,157 @@ function closeStream() {
 }
 
 async function showRun(id) {
-  closeStream();
-  state.view = "run";
-  let run;
+  // Older links point at a single run: open its conversation instead.
   try {
-    run = await api(`/api/runs/${encodeURIComponent(id)}`);
+    const run = await api(`/api/runs/${encodeURIComponent(id)}`);
+    location.replace(`#/c/${run.conversation_id}`);
   } catch (error) {
     if (error.status === 404) {
       toast("That run no longer exists.", "error");
       location.hash = "#/";
     }
+  }
+}
+
+async function showConversation(id) {
+  closeStream();
+  state.view = "conversation";
+  let conversation;
+  try {
+    conversation = await api(`/api/conversations/${encodeURIComponent(id)}`);
+  } catch (error) {
+    if (error.status === 404) {
+      toast("That conversation no longer exists.", "error");
+      location.hash = "#/";
+    }
     return;
   }
-  state.run = run;
+  state.conversationId = conversation.id;
   renderRunList();
-  const view = new RunView(run);
+  const view = new ConversationView(conversation);
   clear(document.getElementById("main")).append(view.root);
-  if (run.status === "running") view.listen();
+  view.listenIfRunning();
+}
+
+// A conversation: one turn per run, then a box to reply. Each reply is a new run that
+// remembers the conversation; a sign-off continues the run that stopped for it.
+class ConversationView {
+  constructor(conversation) {
+    this.id = conversation.id;
+    this.runs = conversation.runs;
+    this.draft = "";
+    this.turns = h("div", { class: "turns" });
+    this.replyBox = h("div", { class: "reply" });
+    this.root = h("div", { class: "page chat" }, this.turns, this.replyBox);
+    this.views = this.runs.map((run) => this.addTurn(run));
+    this.renderReply();
+  }
+
+  addTurn(run) {
+    const view = new RunView(run, this);
+    this.turns.append(view.root);
+    return view;
+  }
+
+  isFirst(run) {
+    return this.runs[0].id === run.id;
+  }
+
+  isLast(run) {
+    return this.runs[this.runs.length - 1].id === run.id;
+  }
+
+  running() {
+    return this.runs.some((run) => run.status === "running");
+  }
+
+  listenIfRunning() {
+    const view = this.views.find((v) => v.run.status === "running");
+    if (view) view.listen();
+    const main = document.getElementById("main");
+    main.scrollTop = main.scrollHeight;
+  }
+
+  async reply(text) {
+    const run = await api("/api/runs", { method: "POST", body: { goal: text, conversation_id: this.id } });
+    this.draft = "";
+    this.begin(run);
+  }
+
+  async resume(run, decision) {
+    const next = await api(`/api/runs/${encodeURIComponent(run.id)}/resume`, { method: "POST", body: decision });
+    this.begin(next);
+  }
+
+  begin(run) {
+    this.runs.push(run);
+    const view = this.addTurn(run);
+    this.views.push(view);
+    for (const other of this.views) if (other !== view) other.refresh(); // the old sign-off panel goes
+    this.renderReply();
+    view.listen();
+    view.root.scrollIntoView({ behavior: "smooth", block: "start" });
+    refreshRuns();
+  }
+
+  ended() {
+    this.renderReply();
+    refreshRuns();
+  }
+
+  async remove() {
+    if (!confirm("Delete this whole conversation from the history?")) return;
+    try {
+      await api(`/api/conversations/${encodeURIComponent(this.id)}`, { method: "DELETE" });
+      location.hash = "#/";
+      refreshRuns();
+    } catch (error) {
+      if (error.status !== 401) toast(error.message, "error");
+    }
+  }
+
+  renderReply() {
+    const s = state.status || { right: {} };
+    const busy = this.running();
+    const ready = !!s.right.ready;
+    const last = this.runs[this.runs.length - 1];
+    const box = h("textarea", {
+      class: "input", rows: 2, value: this.draft, "aria-label": "Reply",
+      placeholder: ready ? "Reply…" : "Replies need a right hemisphere. Set one up in Settings.",
+      disabled: !ready,
+    });
+    const send = h("button", { class: "btn primary", type: "button", disabled: busy || !ready || !this.draft.trim() }, icon("play"), "Send");
+    const submit = async () => {
+      const text = box.value.trim();
+      if (!text || busy || !ready) return;
+      send.disabled = true;
+      try {
+        await this.reply(text);
+      } catch (error) {
+        if (error.status !== 401) toast(error.message, "error");
+        send.disabled = false;
+      }
+    };
+    box.addEventListener("input", () => {
+      this.draft = box.value;
+      send.disabled = busy || !ready || !box.value.trim();
+    });
+    box.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+        event.preventDefault();
+        submit();
+      }
+    });
+    send.addEventListener("click", submit);
+    const hint = busy
+      ? "The agent is working. You can write your reply meanwhile."
+      : last.status === "needs_human"
+        ? "Or approve or reject above. A reply starts a new run, which may stop for the same sign-off."
+        : "Each reply is a new run that remembers this conversation. Enter sends, Shift+Enter adds a line.";
+    clear(this.replyBox).append(
+      h("div", { class: "card reply-card" }, box,
+        h("div", { class: "foot" }, h("span", { class: "faint" }, hint), send)));
+  }
 }
 
 const STEPS_PREFERENCE = "hh.showSteps";
@@ -415,8 +567,9 @@ function rememberStepsOpen(open) {
 // A run reads like a chat: your request, the harness's work folded into one line, then
 // the right hemisphere's answer.
 class RunView {
-  constructor(run) {
+  constructor(run, conversation) {
     this.run = run;
+    this.conversation = conversation;
     this.steps = new Map();
     this.open = false;
     this.timeline = h("div", { class: "timeline" });
@@ -432,7 +585,7 @@ class RunView {
     this.answer = h("div", { class: "answer" });
     this.foot = h("div", { class: "answer-foot" });
     this.after = h("div", { class: "stack" });
-    this.root = h("div", { class: "page chat" },
+    this.root = h("div", { class: "turn" },
       this.userMessage(),
       h("div", { class: "msg-assistant" },
         h("div", { class: "assistant-head" }, h("img", { src: "/favicon.svg", alt: "", width: 22, height: 22 }), "Hemisphere Harness"),
@@ -444,10 +597,13 @@ class RunView {
 
   userMessage() {
     const run = this.run;
-    const extras = [run.context ? "context" : null, run.policy ? "policy" : null].filter(Boolean);
-    return h("div", { class: "msg-user" },
+    // Context and policy belong to the conversation: show them with its first message only.
+    const first = this.conversation.isFirst(run);
+    const extras = first ? [run.context ? "context" : null, run.policy ? "policy" : null].filter(Boolean) : [];
+    return h("div", { class: `msg-user${run.resumed_from ? " signoff-msg" : ""}` },
       h("div", { class: "bubble" },
-        h("div", { class: "bubble-text" }, run.goal),
+        run.resumed_from ? h("div", { class: "bubble-tag" }, "Your sign-off") : null,
+        h("div", { class: "bubble-text" }, run.message || run.goal),
         extras.length
           ? h("details", { class: "more small" },
             h("summary", {}, icon("chevron"), extras.join(" and ")),
@@ -511,25 +667,32 @@ class RunView {
         h("div", { class: "grow" }, h("strong", {}, "The run failed."), h("div", { class: "output" }, run.error))));
     }
 
+    const last = this.conversation.isLast(run);
+    const first = this.conversation.isFirst(run);
+    const signedOff = run.status === "needs_human" && this.conversation.runs.some((r) => r.resumed_from === run.id);
     append(clear(this.foot), [
-      h("span", { class: `chip status-${run.status}` }, STATUS[run.status] || run.status),
+      signedOff
+        ? h("span", { class: "chip status-done" }, "Signed off")
+        : h("span", { class: `chip status-${run.status}` }, STATUS[run.status] || run.status),
       h("span", { class: "chip right", title: "Right hemisphere" }, run.right),
       h("span", { class: "chip left", title: "Left hemisphere" }, run.left),
       run.left_experimental ? h("span", { class: "chip warn" }, "experimental left") : null,
       h("span", { class: "spacer" }),
       report && !running ? h("button", { class: "btn small ghost", type: "button", onclick: () => this.copy(report) }, "Copy") : null,
-      running
-        ? h("button", { class: "btn small danger", type: "button", onclick: () => this.stop() }, icon("stop"), "Stop")
-        : h("button", { class: "btn small ghost", type: "button", onclick: () => this.again() }, icon("again"), "Run again"),
-      running ? null : h("button", { class: "btn small ghost", type: "button", onclick: () => this.remove() }, icon("trash"), "Delete")]);
+      running ? h("button", { class: "btn small danger", type: "button", onclick: () => this.stop() }, icon("stop"), "Stop") : null,
+      !running && first ? h("button", { class: "btn small ghost", type: "button", title: "Start a new conversation with the same request", onclick: () => this.again() }, icon("again"), "Run again") : null,
+      !running && last ? h("button", { class: "btn small ghost", type: "button", title: "Delete the whole conversation", onclick: () => this.conversation.remove() }, icon("trash"), "Delete") : null]);
 
     clear(this.after);
-    if (run.status === "needs_human") {
+    if (run.status === "needs_human" && last && run.can_resume) {
       this.after.append(h("div", { class: "end-banner needs_human" }, icon("alert"),
-        h("div", { class: "grow" }, h("h3", {}, "Waiting for your sign-off"), signOff(run))));
-    } else if (run.status === "max_steps") {
+        h("div", { class: "grow" }, h("h3", {}, "Waiting for your sign-off"), signOff(run, this.conversation))));
+    } else if (run.status === "needs_human" && last) {
       this.after.append(h("div", { class: "notice info" }, icon("info"),
-        h("div", { class: "grow" }, `Stopped at the step limit of ${run.config.max_steps}. Run again with more steps to go further.`)));
+        h("div", { class: "grow" }, "This run was saved before sign-offs could continue a run. Reply to carry on.")));
+    } else if (run.status === "max_steps" && last) {
+      this.after.append(h("div", { class: "notice info" }, icon("info"),
+        h("div", { class: "grow" }, `Stopped at the step limit of ${run.config.max_steps}. Reply to let it carry on.`)));
     }
   }
 
@@ -551,7 +714,7 @@ class RunView {
       source.close();
       if (state.source === source) state.source = null;
       this.refresh();
-      refreshRuns();
+      this.conversation.ended();
     });
     source.addEventListener("error", () => {
       if (source.readyState === EventSource.CLOSED) {
@@ -588,17 +751,6 @@ class RunView {
     location.hash = "#/new";
   }
 
-  async remove() {
-    if (!confirm("Delete this run from the history?")) return;
-    try {
-      await api(`/api/runs/${encodeURIComponent(this.run.id)}`, { method: "DELETE" });
-      location.hash = "#/";
-      refreshRuns();
-    } catch (error) {
-      if (error.status !== 401) toast(error.message, "error");
-    }
-  }
-
   container(step) {
     if (step === null || step === undefined) return this.timeline;
     if (!this.steps.has(step)) {
@@ -622,15 +774,20 @@ function workSummary(run) {
   const steps = new Set(run.events.filter((e) => e.step !== null && e.step !== undefined).map((e) => e.step)).size;
   const final = new Map();
   for (const event of run.events) {
-    if (event.phase === "gate" && event.data.decision) final.set(event.step, event.data.decision);
+    if ((event.phase === "gate" || event.phase === "approve" || event.phase === "reject") && event.data.decision) {
+      final.set(event.step, { ...event.data.decision, byYou: event.actor === "human" });
+    }
   }
-  const count = { left: 0, right: 0, revise: 0, human: 0 };
+  const count = { left: 0, right: 0, revise: 0, human: 0, approved: 0, rejected: 0 };
   for (const decision of final.values()) {
-    if (decision.outcome === "proceed") count[decision.committed_by === "left" ? "left" : "right"] += 1;
+    if (decision.byYou) count[decision.outcome === "proceed" ? "approved" : "rejected"] += 1;
+    else if (decision.outcome === "proceed") count[decision.committed_by === "left" ? "left" : "right"] += 1;
     else if (decision.outcome === "revise") count.revise += 1;
     else if (decision.outcome === "flag_human") count.human += 1;
   }
   const parts = [];
+  if (count.approved) parts.push(`you approved ${count.approved}`);
+  if (count.rejected) parts.push(`you rejected ${count.rejected}`);
   const check = run.events.find((e) => e.phase === "check" && e.data.checks);
   const revised = run.events.some((e) => e.phase === "revise" && e.data.revised);
   if (count.left) parts.push(`the left committed ${count.left}`);
@@ -755,7 +912,7 @@ function inline(text) {
 function nextActivity(run) {
   const events = run.events;
   const last = events[events.length - 1];
-  if (!last) return ["right", "The right hemisphere is planning…"];
+  if (!last) return run.resumed_from ? ["harness", "Continuing with your decision…"] : ["right", "The right hemisphere is planning…"];
   const step = last.step || 0;
   switch (last.phase) {
     case "plan":
@@ -780,6 +937,10 @@ function nextActivity(run) {
       if (flagged || met || step >= run.config.max_steps) return ["right", "The right is writing the answer…"];
       return ["right", `The right is proposing options for step ${step + 1}…`];
     }
+    case "approve":
+      return ["harness", "Carrying out what you approved…"];
+    case "reject":
+      return ["right", "The right is taking your rejection into account…"];
     case "draft": {
       const n = (last.data.claims || []).length;
       return n ? ["left", `The left is checking ${n} claim${n === 1 ? "" : "s"} in the answer…`] : ["harness", "Finishing…"];
@@ -887,6 +1048,17 @@ function renderEvent(event, run) {
         h("div", { class: "text" }, r.situation),
         h("div", { class: "chips spaced" }, h("span", { class: `chip ${r.goal_met ? "ok" : ""}` }, r.goal_met ? "goal met" : "goal not yet met")));
     }
+    case "approve": {
+      const option = d.option || {};
+      return card(null,
+        h("span", { class: "verdict proceed" }, icon("check"), `You approved '${option.id || (d.decision && d.decision.option_id)}'`),
+        option.description ? h("div", { class: "sub" }, option.description) : null,
+        event.details.map((line) => h("div", { class: "sub" }, `Your note: ${line}`)));
+    }
+    case "reject":
+      return card(null,
+        h("span", { class: "verdict revise" }, icon("x"), "You rejected these options"),
+        event.details.map((line) => h("div", { class: "sub" }, `Your note: ${line}`)));
     case "draft": {
       if (!d.draft) return fallback(event, card);
       const claims = d.claims || [];
@@ -949,7 +1121,7 @@ function barRow(id, p, top, fillClass, markers, band) {
     h("span", { class: "name" }, id), track, h("span", { class: "val" }, fmt(p)));
 }
 
-function signOff(run) {
+function signOff(run, conversation) {
   const gate = [...run.events].reverse().find((e) => e.phase === "gate" && e.data.decision && e.data.decision.outcome === "flag_human");
   if (!gate) return null;
   const step = gate.step;
@@ -958,15 +1130,22 @@ function signOff(run) {
   const decision = gate.data.decision;
   const recommended = evaluation && evaluation.data.evaluation ? evaluation.data.evaluation.option_id : null;
   const options = propose && propose.data.proposal ? propose.data.proposal.options : [];
+  const note = h("input", { class: "input", type: "text", placeholder: "Add a note for the agent (optional)", "aria-label": "Note" });
+  const buttons = [];
 
-  const followUp = (text) => {
-    state.prefill = {
-      goal: run.goal,
-      context: `${run.context ? run.context + "\n\n" : ""}${text}`,
-      policy: run.policy,
-      max_steps: run.config.max_steps,
-    };
-    location.hash = "#/new";
+  const decide = async (body) => {
+    buttons.forEach((b) => { b.disabled = true; });
+    try {
+      await conversation.resume(run, { ...body, note: note.value });
+    } catch (error) {
+      if (error.status !== 401) toast(error.message, "error");
+      buttons.forEach((b) => { b.disabled = false; });
+    }
+  };
+  const button = (label, cls, body) => {
+    const b = h("button", { class: `btn small ${cls}`, type: "button", onclick: () => decide(body) }, label);
+    buttons.push(b);
+    return b;
   };
 
   return h("div", { class: "signoff" },
@@ -979,11 +1158,12 @@ function signOff(run) {
           o.id === recommended ? h("span", { class: "chip right" }, "the right recommends") : null,
           o.id === decision.left_choice ? h("span", { class: "chip left" }, `the left's pick, p=${fmt(decision.probability)}`) : null,
           permit !== undefined ? h("span", { class: "chip" }, `policy ${fmt(permit)}`) : null),
-        h("button", { class: "btn small tag", type: "button", onclick: () => followUp(`Human sign-off on step ${step}: approved '${o.id}' (${o.description}). It may be carried out.`) }, "Approve"));
+        button("Approve", "tag", { approve: true, option_id: o.id }));
     }),
+    note,
     h("div", { class: "row" },
-      h("button", { class: "btn small", type: "button", onclick: () => followUp(`Human sign-off on step ${step}: none of the offered options (${options.map((o) => o.id).join(", ")}) is approved. Find another way.`) }, "Reject all"),
-      h("span", { class: "faint" }, "Starts a new run with your decision added to its context. The harness has no resume yet.")));
+      button("Reject all", "", { approve: false }),
+      h("span", { class: "faint" }, "Approving carries out that action and the agent carries on from there. Rejecting sends it back to find another way.")));
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1029,9 +1209,14 @@ function outcomeOf(decision) {
 
 function networkLayers(run) {
   const events = run.events;
-  const layers = [{ label: "request", nodes: [{ kind: "input", title: run.goal }] }];
+  const layers = [{ label: run.resumed_from ? "sign-off" : "request", nodes: [{ kind: "input", title: run.message || run.goal }] }];
   const plan = events.find((e) => e.phase === "plan");
   if (plan) layers.push({ label: "plan", nodes: [{ kind: "right", title: (plan.data.plan && plan.data.plan.situation) || plan.summary }] });
+  const human = events.find((e) => e.phase === "approve" || e.phase === "reject");
+  if (human) {
+    const approved = human.phase === "approve";
+    layers.push({ label: "you", nodes: [{ kind: `human ${approved ? "approved" : "rejected"}`, title: approved ? `You approved '${(human.data.option || {}).id}'` : "You rejected the options" }] });
+  }
 
   const steps = [...new Set(events.filter((e) => e.step !== null && e.step !== undefined).map((e) => e.step))];
   for (const step of steps) {
@@ -1193,7 +1378,7 @@ async function openSettings(section = settings.section) {
     return;
   }
   document.getElementById("settings").hidden = false;
-  if (!location.hash.startsWith("#/run/")) history.replaceState(null, "", `#/settings/${section}`);
+  if (!location.hash.startsWith("#/run/") && !location.hash.startsWith("#/c/")) history.replaceState(null, "", `#/settings/${section}`);
   renderSettings();
 }
 
@@ -1565,6 +1750,11 @@ function aboutSection() {
 // Routing and start-up
 
 function route() {
+  const chat = location.hash.match(/^#\/c\/([\w-]+)$/);
+  if (chat) {
+    showConversation(chat[1]);
+    return;
+  }
   const run = location.hash.match(/^#\/run\/([\w-]+)$/);
   const section = location.hash.match(/^#\/settings(?:\/(\w+))?$/);
   if (run) {

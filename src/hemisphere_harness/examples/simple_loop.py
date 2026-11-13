@@ -54,6 +54,8 @@ class Ticket:
     right: dict[str, Any] = field(default_factory=dict)
     left: list[dict[str, Answer]] = field(default_factory=list)
     outcomes: dict[str, str] = field(default_factory=dict)
+    # What the scripted right says if a person approves the step the ticket stops on.
+    after_signoff: dict[str, Any] = field(default_factory=dict)
 
 
 async def run_ticket(ticket: Ticket, settings: Settings) -> RunResult:
@@ -276,6 +278,26 @@ REFUND = Ticket(
             "threatened a chargeback today."
         ),
         claims=[Claim(text="Northwind Logistics' refund terms give a full refund within 14 days of renewal.")],
+    ),
+    outcomes={"full_refund": "Plan cancelled; $2,400 refunded to the card on file."},
+    after_signoff=dict(
+        plan=Plan(situation="(not used: the run continues from where it stopped)"),
+        proposals=[],
+        reintegrations=[
+            Reintegration(
+                situation=(
+                    "With a human's sign-off the plan is cancelled and the full $2,400 refunded. "
+                    "That removes the reason for a chargeback."
+                ),
+                goal_met=True,
+            )
+        ],
+        report=(
+            "Done: with your sign-off I cancelled Northwind Logistics' annual plan and refunded the "
+            "full $2,400 to the card on file. Their cancellation request came two days before the "
+            "renewal, so the charge was our mistake, and the refund should settle the chargeback "
+            "threat. It is worth finding out why the request was never actioned."
+        ),
     ),
     left=[
         {

@@ -398,3 +398,148 @@ async def test_with_the_mock_left_a_live_run_does_not_check_answers(clean_env, t
         run = (await http.post("/api/runs", headers=AUTH, json={"goal": "g"})).json()
         await wait_for_end(http, run["id"])
     assert run["config"]["check_answers"] is False
+
+
+# --- Conversations ------------------------------------------------------------------------
+
+
+class OneStepRight(ScriptedRightHemisphere):
+    """Answers every message in one step and keeps the conversation it was shown."""
+
+    conversations: list = []
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(plan=Plan(situation="s"), proposals=[])
+
+    async def plan(self, state):
+        OneStepRight.conversations.append([(t.request, t.answer) for t in state.conversation])
+        return Plan(situation="reading")
+
+    async def propose(self, state):
+        from hemisphere_harness import Option, Proposal, Stakes
+
+        return Proposal(options=[Option(id="a", description="a"), Option(id="b", description="b")],
+                        rationale="r", stakes=Stakes.LOW, open_ended=False)  # fmt: skip
+
+    async def evaluate(self, state, proposal, decision):
+        from hemisphere_harness import Evaluation, Verdict
+
+        return Evaluation(verdict=Verdict.COMMIT, option_id="a", reasoning="r")
+
+    async def reintegrate(self, state, step):
+        from hemisphere_harness import Reintegration
+
+        return Reintegration(situation="done", goal_met=True)
+
+    async def generate(self, prompt, state=None):
+        return f"answer to: {state.goal}"
+
+
+async def test_a_reply_continues_the_conversation_with_what_came_before(clean_env, tmp_path, monkeypatch):
+    OneStepRight.conversations = []
+    monkeypatch.setattr(runs_module, "build_right", lambda s: OneStepRight())
+    clean_env.setenv("RIGHT_MODEL", "anything")
+    async with client(make_app(tmp_path)) as http:
+        first = (await http.post("/api/runs", headers=AUTH, json={"goal": "Is Bitcoin decentralized?", "context": "ctx", "policy": "p"})).json()
+        await wait_for_end(http, first["id"])
+        reply = await http.post("/api/runs", headers=AUTH, json={"goal": "And Ethereum?", "conversation_id": first["conversation_id"]})
+        assert reply.status_code == 201
+        second = await wait_for_end(http, reply.json()["id"])
+        conversation = (await http.get(f"/api/conversations/{first['id']}", headers=AUTH)).json()
+        listed = (await http.get("/api/runs", headers=AUTH)).json()["runs"]
+
+    assert first["conversation_id"] == first["id"]
+    assert second["status"] == "done", second["error"]
+    assert second["conversation_id"] == first["id"]
+    assert (second["message"], second["context"], second["policy"]) == ("And Ethereum?", "ctx", "p")
+    assert OneStepRight.conversations == [[], [("Is Bitcoin decentralized?", "answer to: Is Bitcoin decentralized?")]]
+    assert [run["id"] for run in conversation["runs"]] == [first["id"], second["id"]]
+    assert all("state" not in run for run in conversation["runs"])  # the saved state stays on the server
+    assert {run["conversation_id"] for run in listed} == {first["id"]}
+
+
+async def test_replies_wait_for_the_running_run_and_need_a_right_hemisphere(clean_env, tmp_path, monkeypatch):
+    class Stuck(ScriptedRightHemisphere):
+        async def plan(self, state):
+            await asyncio.Event().wait()
+
+    async with client(make_app(tmp_path)) as http:
+        demo = await wait_for_end(http, (await http.post("/api/runs", headers=AUTH, json={"demo": "lockout"})).json()["id"])
+        offline = await http.post("/api/runs", headers=AUTH, json={"goal": "thanks", "conversation_id": demo["conversation_id"]})
+        assert offline.status_code == 400 and "Replies need a right hemisphere" in offline.json()["error"]
+
+        monkeypatch.setattr(runs_module, "build_right", lambda s: Stuck(plan=Plan(situation="s"), proposals=[]))
+        clean_env.setenv("RIGHT_MODEL", "anything")
+        running = (await http.post("/api/runs", headers=AUTH, json={"goal": "g"})).json()
+        busy = await http.post("/api/runs", headers=AUTH, json={"goal": "more", "conversation_id": running["conversation_id"]})
+        assert busy.status_code == 409
+        await http.post(f"/api/runs/{running['id']}/cancel", headers=AUTH)
+        await wait_for_end(http, running["id"])
+
+        missing = await http.post("/api/runs", headers=AUTH, json={"goal": "x", "conversation_id": "nope"})
+        assert missing.status_code == 400
+
+
+async def test_approving_the_refund_demo_continues_the_stopped_run(clean_env, tmp_path):
+    async with client(make_app(tmp_path)) as http:
+        stopped = await wait_for_end(http, (await http.post("/api/runs", headers=AUTH, json={"demo": "refund"})).json()["id"])
+        assert stopped["status"] == "needs_human"
+
+        resumed = await http.post(f"/api/runs/{stopped['id']}/resume", headers=AUTH,
+                                  json={"approve": True, "option_id": "full_refund", "note": "finance agrees"})  # fmt: skip
+        assert resumed.status_code == 201
+        run = await wait_for_end(http, resumed.json()["id"])
+
+        again = await http.post(f"/api/runs/{stopped['id']}/resume", headers=AUTH, json={"approve": True, "option_id": "full_refund"})
+        conversation = (await http.get(f"/api/conversations/{stopped['conversation_id']}", headers=AUTH)).json()
+
+    assert run["status"] == "done"
+    assert run["message"] == "Approved: Cancel the plan and refund the full $2,400 — finance agrees"
+    assert run["resumed_from"] == stopped["id"] and run["conversation_id"] == stopped["conversation_id"]
+    first = run["events"][0]
+    assert (first["actor"], first["phase"]) == ("human", "approve")
+    act = next(event for event in run["events"] if event["phase"] == "act")
+    assert act["data"]["action"]["output"] == "Plan cancelled; $2,400 refunded to the card on file."
+    assert run["report"].startswith("Done: with your sign-off")
+    assert again.status_code == 409  # the conversation has moved on
+    assert len(conversation["runs"]) == 2
+
+
+async def test_what_can_and_cannot_be_resumed(clean_env, tmp_path):
+    async with client(make_app(tmp_path)) as http:
+        stopped = await wait_for_end(http, (await http.post("/api/runs", headers=AUTH, json={"demo": "refund"})).json()["id"])
+        done = await wait_for_end(http, (await http.post("/api/runs", headers=AUTH, json={"demo": "lockout"})).json()["id"])
+
+        invented = await http.post(f"/api/runs/{stopped['id']}/resume", headers=AUTH, json={"approve": True, "option_id": "invented"})
+        assert invented.status_code == 400 and "not one of" in invented.json()["error"]
+        rejected = await http.post(f"/api/runs/{stopped['id']}/resume", headers=AUTH, json={"approve": False})
+        assert rejected.status_code == 400 and "only for an approval" in rejected.json()["error"]
+        finished = await http.post(f"/api/runs/{done['id']}/resume", headers=AUTH, json={"approve": False})
+        assert finished.status_code == 409
+
+
+async def test_runs_saved_before_conversations_load_as_conversations_of_one(clean_env, tmp_path):
+    async with client(make_app(tmp_path)) as http:
+        run_id = (await http.post("/api/runs", headers=AUTH, json={"demo": "lockout"})).json()["id"]
+        await wait_for_end(http, run_id)
+    file = tmp_path / "data" / "runs" / f"{run_id}.json"
+    old = json.loads(file.read_text())
+    for key in ("conversation_id", "message", "resumed_from", "state"):
+        old.pop(key, None)
+    file.write_text(json.dumps(old))
+
+    async with client(make_app(tmp_path)) as http:
+        run = (await http.get(f"/api/runs/{run_id}", headers=AUTH)).json()
+    assert run["conversation_id"] == run_id
+    assert run["message"] == run["goal"]
+
+
+async def test_a_conversation_is_deleted_whole(clean_env, tmp_path):
+    async with client(make_app(tmp_path)) as http:
+        stopped = await wait_for_end(http, (await http.post("/api/runs", headers=AUTH, json={"demo": "refund"})).json()["id"])
+        resumed = (await http.post(f"/api/runs/{stopped['id']}/resume", headers=AUTH, json={"approve": True, "option_id": "full_refund"})).json()
+        await wait_for_end(http, resumed["id"])
+        deleted = await http.delete(f"/api/conversations/{stopped['conversation_id']}", headers=AUTH)
+        assert sorted(deleted.json()["deleted"]) == sorted([stopped["id"], resumed["id"]])
+        assert (await http.get("/api/runs", headers=AUTH)).json()["runs"] == []
+        assert (await http.get(f"/api/conversations/{stopped['conversation_id']}", headers=AUTH)).status_code == 404

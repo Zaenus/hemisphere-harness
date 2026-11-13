@@ -121,6 +121,29 @@ The left judges claims with what it knows. A decision model knows less than a la
 chat model, so treat a "holds" as "not obviously wrong", not as verified. Nothing here
 looks anything up.
 
+## Conversations and sign-off
+
+A conversation is a series of runs. `WorldState.conversation` holds the earlier
+exchanges, each a `Turn` of what the person said and what the agent answered. What each
+part sees of them follows the same rule as everything else:
+
+| Who | Sees |
+|---|---|
+| the right | the last eight exchanges, answers shortened past 2,000 characters |
+| the left, deciding | the last exchange only, clipped to a few hundred characters |
+| the left, checking claims | what the person said earlier, never the agent's own answers, which are not evidence |
+
+`Harness.resume(state, decision)` continues a run that stopped for a human. An approval
+carries out the chosen option as a step committed by `"human"`. That is the only way past
+an option the policy gate refused: it asked for a person's sign-off, and this is it. A
+rejection is recorded as a revision with the person's note, and the right proposes
+again. Either way the right reintegrates the step, the run continues for up to
+`max_steps` more steps, and it answers and checks as usual. Both are traced with the
+actor `human`. The stopped run's state is copied, not changed.
+
+`Conversation` wraps both: `send` for a new message, `approve` and `reject` for a
+sign-off. The web UI and `hemisphere-harness chat` are built on the same two calls.
+
 ## Types
 
 Three layers lead from the left's raw output to the harness's verdict.
@@ -231,9 +254,8 @@ is built on this alone. It streams events to the browser over server-sent events
 draws them from `data`. It does not reach into the harness.
 
 **Human in the loop.** On `needs_human`, `result.state.history[-1]` holds the proposal,
-the left's verdict and the right's recommendation. To continue after sign-off, either
-start a new run with the human's decision in `context`, or drive `Harness.step` yourself
-from the saved state.
+the left's verdict and the right's recommendation. `Harness.resume(result.state,
+HumanDecision(...))` continues that run with a person's decision. See below.
 
 **Memory.** `WorldState` is a Pydantic model, so it serialises as it stands. Load earlier
 situations or lessons into `context` at the start of a run. Have the right decide what
@@ -257,6 +279,10 @@ keeps one right hemisphere responsible for each whole.
 - **A left failure never stops a run.** This includes a bad API key, which shows up in
   the trace on every step.
 - **Stopping for a human ends the run.** There is no callback that waits for an answer.
+  `resume` picks it up later from the saved state, in the same process or another.
+- **A reply is a new run, not a resumption.** It plans afresh with the conversation in
+  view. Only an explicit approval or rejection continues a stopped run, so a casual
+  "yes" can never carry out an action the policy reserved for a person.
 - **The person hears one agent.** The two hemispheres are how the work is organised, not
   who the person talks to. As in McGilchrist's cycle, what the left settled is taken back
   into the right, and the right speaks for the whole. The trace keeps the division of

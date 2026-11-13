@@ -5,6 +5,7 @@ See README.md for the idea and docs/architecture.md for the contract.
 """
 
 from .config import HarnessConfig, Settings
+from .conversation import Conversation
 from .errors import ConfigError, HarnessError, LeftHemisphereError, RightHemisphereError
 from .harness import Actuator, Harness, dry_run
 from .left import (
@@ -46,6 +47,7 @@ from .schemas import (
     Decision,
     Evaluation,
     Hemisphere,
+    HumanDecision,
     LeftResult,
     NoulAnswer,
     NoulQuestion,
@@ -61,6 +63,7 @@ from .schemas import (
     ScoreQuestion,
     Stakes,
     StepRecord,
+    Turn,
     Verdict,
     WorldState,
 )
@@ -83,6 +86,7 @@ __all__ = [
     "ClaimList",
     "ClaimVerdict",
     "ConfigError",
+    "Conversation",
     "Decision",
     "Evaluation",
     "ExperimentalLLMLeft",
@@ -91,6 +95,7 @@ __all__ = [
     "HarnessConfig",
     "HarnessError",
     "Hemisphere",
+    "HumanDecision",
     "JevLeftHemisphere",
     "LLMRightHemisphere",
     "LeftHemisphere",
@@ -121,6 +126,7 @@ __all__ = [
     "Trace",
     "TraceEvent",
     "TracePrinter",
+    "Turn",
     "Verdict",
     "WorldState",
     "build_left",

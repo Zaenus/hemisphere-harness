@@ -14,7 +14,7 @@ by which a left verdict becomes a commitment, `_resolve` is where the right's ju
 replaces it, and reintegration is the only write to the world state's situation.
 """
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from types import TracebackType
 from typing import Any, Self
 
@@ -31,9 +31,11 @@ from .schemas import (
     Claim,
     ClaimCheck,
     ClaimVerdict,
+    HUMAN,
     Decision,
     Evaluation,
     Hemisphere,
+    HumanDecision,
     LeftResult,
     NoulAnswer,
     NoulQuestion,
@@ -45,6 +47,7 @@ from .schemas import (
     RunStatus,
     Stakes,
     StepRecord,
+    Turn,
     Verdict,
     WorldState,
 )
@@ -56,6 +59,7 @@ Actuator = Callable[[Option, WorldState], Awaitable[str]]
 SELECT = "select"
 PERMIT = "permit:"
 CLAIM = "claim:"
+MAX_EARLIER = 4  # earlier messages from the person shown to the claim check
 
 ANSWER_PROMPT = """\
 Now reply to the person who made this request. This reply is all they will see.
@@ -107,9 +111,12 @@ class Harness:
         self._actuator = act
         self._on_event = on_event
 
-    async def run(self, goal: str, *, context: str = "") -> RunResult:
-        """Pursue `goal` until the right judges it met, a human is needed, or steps run out."""
-        state = WorldState(goal=goal, context=context)
+    async def run(self, goal: str, *, context: str = "", conversation: Sequence[Turn] = ()) -> RunResult:
+        """Pursue `goal` until the right judges it met, a human is needed, or steps run out.
+
+        `conversation` holds the earlier exchanges when `goal` is a reply. See Conversation.
+        """
+        state = WorldState(goal=goal, context=context, conversation=list(conversation))
         trace = Trace(self._on_event)
 
         plan = await self.right.plan(state)
@@ -122,6 +129,60 @@ class Harness:
             data={"plan": plan.model_dump(mode="json")},
         )
 
+        return await self._continue(state, trace)
+
+    async def resume(self, state: WorldState, decision: HumanDecision) -> RunResult:
+        """Continue a run that stopped for a human, with that human's decision.
+
+        `state` is `RunResult.state` from the stopped run. An approval carries out the chosen
+        option as a step committed by the human: the policy gate refused it to the
+        hemispheres, and a person's sign-off is exactly what it asked for. A rejection is
+        recorded and the right proposes again. Either way the right reintegrates, and the
+        run continues for up to `max_steps` more steps, then answers as usual.
+        """
+        last = state.history[-1] if state.history else None
+        if last is None or last.decision.outcome is not Outcome.FLAG_HUMAN:
+            raise ValueError("this run is not waiting for a human")
+        state = state.model_copy(deep=True)
+        trace = Trace(self._on_event)
+        index = len(state.history) + 1
+        note = decision.note.strip()
+
+        action: ActionResult | None = None
+        if decision.approve:
+            option = last.proposal.option(decision.option_id)
+            if option is None:
+                offered = ", ".join(o.id for o in last.proposal.options)
+                raise ValueError(f"'{decision.option_id}' was not one of the options ({offered})")
+            reason = "approved by a human" + (f": {note}" if note else "")
+            human = last.decision.model_copy(
+                update={"outcome": Outcome.PROCEED, "option_id": option.id, "committed_by": HUMAN, "reasons": [reason]}
+            )
+            trace.emit(Actor.HUMAN, "approve", f"approves '{option.id}'", *([note] if note else []), step=index,
+                       data={"decision": human.model_dump(mode="json"), "option": option.model_dump(mode="json")})  # fmt: skip
+            action = await self._act(option, state)
+            trace.emit(
+                Actor.HARNESS,
+                "act",
+                f"{option.id} → {action.output}" if action.ok else f"{option.id} FAILED: {action.output}",
+                step=index,
+                data={"action": action.model_dump(mode="json")},
+            )
+        else:
+            reason = "a human rejected these options" + (f": {note}" if note else "")
+            human = last.decision.model_copy(
+                update={"outcome": Outcome.REVISE, "option_id": None, "committed_by": None, "reasons": [reason]}
+            )
+            trace.emit(Actor.HUMAN, "reject", "rejects these options", *([note] if note else []), step=index,
+                       data={"decision": human.model_dump(mode="json")})  # fmt: skip
+
+        record = StepRecord(index=index, proposal=last.proposal, decision=human, action=action)
+        await self._reintegrate(state, record, trace)
+        if record.reintegration is not None and record.reintegration.goal_met:
+            return await self._finish(state, trace, RunStatus.DONE)
+        return await self._continue(state, trace)
+
+    async def _continue(self, state: WorldState, trace: Trace) -> RunResult:
         status = RunStatus.MAX_STEPS
         for _ in range(self.config.max_steps):
             record = await self.step(state, trace)
@@ -131,7 +192,9 @@ class Harness:
             if record.reintegration is not None and record.reintegration.goal_met:
                 status = RunStatus.DONE
                 break
+        return await self._finish(state, trace, status)
 
+    async def _finish(self, state: WorldState, trace: Trace, status: RunStatus) -> RunResult:
         # The run ends where McGilchrist's cycle does: back in the right, which speaks for
         # the whole. The reply is the agent's settled view, in one voice. Before the person
         # sees it, the left checks its claims and the right takes back what does not hold.
@@ -220,6 +283,9 @@ class Harness:
         view: dict[str, Any] = {"request": state.goal}
         if state.context:
             view["context"] = state.context
+        if state.conversation:
+            # What the person said earlier may hold facts; what the agent answered is not evidence.
+            view["earlier_messages"] = [turn.request for turn in state.conversation[-MAX_EARLIER:]]
         return view
 
     def _claim_questions(self, claims: list[Claim]) -> dict[str, Question]:
@@ -313,6 +379,10 @@ class Harness:
             evaluation=evaluation,
             action=action,
         )
+        await self._reintegrate(state, record, trace)
+        return record
+
+    async def _reintegrate(self, state: WorldState, record: StepRecord, trace: Trace) -> None:
         reintegration = await self.right.reintegrate(state, record)
         record.reintegration = reintegration
         state.situation = reintegration.situation
@@ -322,10 +392,9 @@ class Harness:
             "reintegrate",
             reintegration.situation,
             "goal met" if reintegration.goal_met else "goal not yet met",
-            step=index,
+            step=record.index,
             data={"reintegration": reintegration.model_dump(mode="json")},
         )
-        return record
 
     def build_questions(self, state: WorldState, proposal: Proposal) -> dict[str, Question]:
         """The typed questions put to the left for one proposal. All are answered in one pass.

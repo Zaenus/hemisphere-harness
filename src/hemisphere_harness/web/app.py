@@ -40,7 +40,7 @@ from ..providers import OLLAMA, build_left, build_right, left_providers, right_p
 from ..right import LLMRightHemisphere
 from ..schemas import ChoiceAnswer, ChoiceQuestion
 from . import envfile
-from .runs import RunManager, RunRequest, RunStore
+from .runs import ConflictError, ResumeRequest, Run, RunManager, RunRequest, RunStore
 
 STATIC = Path(__file__).parent / "static"
 LOOPBACK = {"127.0.0.1", "localhost", "::1"}
@@ -165,6 +165,8 @@ def create_app(config: WebConfig) -> Starlette:
                 result = await handler(request)
             except ApiError as exc:
                 return JSONResponse({"error": str(exc)}, status_code=exc.status)
+            except ConflictError as exc:
+                return JSONResponse({"error": str(exc)}, status_code=409)
             except ConfigError as exc:
                 return JSONResponse({"error": str(exc)}, status_code=400)
             except ValidationError as exc:
@@ -339,13 +341,38 @@ def create_app(config: WebConfig) -> Starlette:
     async def list_runs(request: Request) -> dict[str, Any]:
         return {"runs": [run.summary() for run in store.newest_first()]}
 
+    def public(run: Run) -> dict[str, Any]:
+        """A run as the page sees it. The saved world state stays on the server."""
+        result: dict[str, Any] = run.model_dump(mode="json", exclude={"state"})
+        result["can_resume"] = run.can_resume
+        return result
+
     async def start_run(request: Request) -> Response:
         run = manager.start(await body(request, RunRequest))
-        return JSONResponse(run.model_dump(mode="json"), status_code=201)
+        return JSONResponse(public(run), status_code=201)
 
     async def get_run(request: Request) -> dict[str, Any]:
-        result: dict[str, Any] = find(request).model_dump(mode="json")
-        return result
+        return public(find(request))
+
+    async def resume_run(request: Request) -> Response:
+        run = manager.resume(find(request).id, await body(request, ResumeRequest))
+        return JSONResponse(public(run), status_code=201)
+
+    async def get_conversation(request: Request) -> dict[str, Any]:
+        runs = store.conversation(request.path_params["conversation_id"])
+        if not runs:
+            raise ApiError("No such conversation.", 404)
+        return {"id": runs[0].conversation_id, "runs": [public(run) for run in runs]}
+
+    async def delete_conversation(request: Request) -> dict[str, Any]:
+        runs = store.conversation(request.path_params["conversation_id"])
+        if not runs:
+            raise ApiError("No such conversation.", 404)
+        if any(manager.is_running(run.id) for run in runs):
+            raise ApiError("Stop the run before deleting the conversation.", 409)
+        for run in runs:
+            store.delete(run.id)
+        return {"deleted": [run.id for run in runs]}
 
     async def cancel_run(request: Request) -> dict[str, Any]:
         run = find(request)
@@ -372,6 +399,7 @@ def create_app(config: WebConfig) -> Starlette:
             final = store.runs.get(run.id)
             if final is not None:
                 summary = final.model_dump(mode="json", include={"id", "status", "error", "report", "finished"})
+                summary["can_resume"] = final.can_resume
                 yield f"event: end\ndata: {json.dumps(summary)}\n\n"
 
         return StreamingResponse(stream(), media_type="text/event-stream", headers={"x-accel-buffering": "no"})
@@ -389,6 +417,9 @@ def create_app(config: WebConfig) -> Starlette:
         Route("/api/runs/{run_id}", endpoint(get_run), methods=["GET"]),
         Route("/api/runs/{run_id}", endpoint(delete_run), methods=["DELETE"]),
         Route("/api/runs/{run_id}/cancel", endpoint(cancel_run), methods=["POST"]),
+        Route("/api/runs/{run_id}/resume", endpoint(resume_run), methods=["POST"]),
+        Route("/api/conversations/{conversation_id}", endpoint(get_conversation), methods=["GET"]),
+        Route("/api/conversations/{conversation_id}", endpoint(delete_conversation), methods=["DELETE"]),
         Route("/api/runs/{run_id}/events", endpoint(run_events), methods=["GET"]),
         Mount("/static", StaticFiles(directory=STATIC), name="static"),
     ]

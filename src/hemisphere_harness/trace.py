@@ -15,6 +15,7 @@ class Actor(StrEnum):
     RIGHT = "right"
     LEFT = "left"
     HARNESS = "harness"
+    HUMAN = "human"
 
 
 class TraceEvent(BaseModel):
@@ -58,7 +59,7 @@ class Trace:
 class TracePrinter:
     """An event sink that prints an aligned transcript, coloured by actor on a terminal."""
 
-    _COLOR = {Actor.RIGHT: "35", Actor.LEFT: "36", Actor.HARNESS: "33"}
+    _COLOR = {Actor.RIGHT: "35", Actor.LEFT: "36", Actor.HARNESS: "33", Actor.HUMAN: "32"}
     _DIM = "2"
 
     def __init__(

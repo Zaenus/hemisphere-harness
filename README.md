@@ -97,8 +97,9 @@ four parts:
   endpoint serves; for Ollama the left only accepts decision models. Enter API keys, and
   test each hemisphere with one small real call. Settings are saved to `.env` in the
   directory you started from, which is the same file the command-line example reads.
-- **New runs.** Each run has a goal, context, an operator policy and a step limit. The
-  two demo tickets run offline until a right hemisphere is set up.
+- **Conversations.** Start one with a goal, context, an operator policy and a step limit,
+  then reply under the answer as in any chat. The two demo tickets run offline until a
+  right hemisphere is set up.
 - **Each run drawn as a network.** Layers of neurons run from your request to the
   answer: the plan, every step's options lit by the left's probability and wired to that
   step's outcome, and the answer's claims coloured by whether they held. While a run is
@@ -110,9 +111,10 @@ four parts:
   done. Unfold it to see every step: which hemisphere did what, the left's probabilities
   against the commit and policy thresholds, and each gate's verdict and why.
 - **Sign-off.** When the harness stops for a human, the page shows the flagged options,
-  with the right's recommendation and the left's pick. Approving one starts a follow-up
-  run with your decision in its context. The harness cannot yet resume the stopped run
-  itself.
+  with the right's recommendation and the left's pick. Approve one and the stopped run
+  carries on from where it stopped: the action is carried out as committed by you, and
+  the agent continues and answers. Reject them and it looks for another way. Either can
+  carry a note.
 
 Run history is kept in `./.hemisphere/`. Actions in the UI are always simulated.
 
@@ -136,6 +138,31 @@ The server holds your API keys and can spend money with them, so it protects the
 - Model output is shown as text only, under a strict Content-Security-Policy.
 
 `python -m hemisphere_harness web` works too. Without `web`, the command lists providers.
+
+## Conversations
+
+Each answer can be replied to. A reply is a new run (the right plans, the left decides,
+the answer is checked) that remembers the conversation: the right sees the earlier
+messages and answers, and the left sees only the last exchange, briefly, which keeps it
+narrow as the design intends. The claim check sees what you said earlier, but never the
+agent's own earlier answers.
+
+When a run stops for your sign-off, a reply is not the same as approving. `Approve`
+continues the stopped run with your decision; a reply starts a new run, which may reach
+the same sign-off again.
+
+```bash
+hemisphere-harness chat                 # in the terminal; --trace shows every step
+```
+
+```text
+you> Is it true that Bitcoin is a decentralized currency?
+agent> Bitcoin is decentralized in its consensus layer…
+you> How does that compare with Ethereum?
+agent> …
+```
+
+In the terminal, `/approve <option> [note]` and `/reject [note]` answer a sign-off.
 
 ## Example run
 
@@ -327,6 +354,21 @@ decision with its reasons, the right's evaluation, the action result, and the
 reintegration. When the status is `needs_human`, the last step holds what is waiting and
 what the right recommends.
 
+For a conversation, use `Conversation`. It remembers the exchanges, and continues a run
+that stopped for a human when you approve or reject:
+
+```python
+from hemisphere_harness import Conversation
+
+conversation = Conversation(harness, context="Facts for the whole conversation")
+result = await conversation.send("Resolve ticket #4907")
+if conversation.waiting:                       # the options it stopped on
+    result = await conversation.approve("full_refund", note="finance agrees")
+result = await conversation.send("Now draft the email to the customer.")
+```
+
+`Harness.resume(state, HumanDecision(...))` is the same thing without the bookkeeping.
+
 ## Configuration
 
 Set these in the environment or in `.env`. All are optional.
@@ -387,7 +429,8 @@ src/hemisphere_harness/
 ├── trace.py                the record of who did what, and its printer
 ├── errors.py
 ├── _http.py                POST with retries, shared by both clients
-├── cli.py                  `hemisphere-harness`: lists providers, or starts the web UI
+├── cli.py                  `hemisphere-harness`: lists providers, starts the web UI, or chats
+├── conversation.py         Conversation: replies that remember, and sign-offs that continue
 ├── __main__.py             `python -m hemisphere_harness`, the same command
 ├── right/
 │   ├── base.py             RightHemisphere: plan, propose, evaluate, reintegrate, generate
@@ -441,8 +484,9 @@ This is a first version, kept small on purpose.
   every step back to the right. Its numbers say nothing about how Jev would answer.
 - **Actions are one callable.** There is no tool registry yet. See the extension points
   in `docs/architecture.md`.
-- **A run is self-contained.** There is no memory across runs and no built-in way to
-  resume after a human signs off. The web UI's sign-off starts a follow-up run instead.
+- **Memory lasts one conversation.** Within a conversation every run sees what came
+  before; a new conversation starts empty. Long conversations are cut to the last eight
+  exchanges for the right.
 - **The web UI is for one person on one machine.** It has a launch token, not user
   accounts, and it cannot store a value containing `${` because `.env` files expand it.
 - Jev's image inputs and `box` questions are not supported.

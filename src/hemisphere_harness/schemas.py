@@ -27,6 +27,10 @@ class Hemisphere(StrEnum):
     LEFT = "left"
 
 
+HUMAN = "human"
+"""Who committed a step that a person signed off. See `Harness.resume`."""
+
+
 class Stakes(StrEnum):
     LOW = "low"
     HIGH = "high"
@@ -243,7 +247,7 @@ class Decision(BaseModel):
 
     # What was committed. Set only when outcome is PROCEED.
     option_id: str | None = None
-    committed_by: Hemisphere | None = None
+    committed_by: Hemisphere | Literal["human"] | None = None
 
     reasons: list[str] = Field(default_factory=list)
 
@@ -268,10 +272,8 @@ class StepRecord(BaseModel):
         decision = self.decision
         if self.action is not None:
             result = "done" if self.action.ok else "FAILED"
-            return (
-                f"step {self.index}: the {decision.committed_by} hemisphere chose "
-                f"'{decision.option_id}' -> {result}: {self.action.output}"
-            )
+            who = "a human approved" if decision.committed_by == HUMAN else f"the {decision.committed_by} hemisphere chose"
+            return f"step {self.index}: {who} '{decision.option_id}' -> {result}: {self.action.output}"
         offered = ", ".join(option.id for option in self.proposal.options)
         why = self.evaluation.reasoning if self.evaluation else "; ".join(decision.reasons)
         if decision.outcome is Outcome.FLAG_HUMAN:
@@ -279,11 +281,36 @@ class StepRecord(BaseModel):
         return f"step {self.index}: nothing done, options rejected (offered: {offered}): {why}"
 
 
+class Turn(BaseModel):
+    """One earlier exchange of a conversation: what the person said, and the agent's answer."""
+
+    request: str
+    answer: str
+
+
+class HumanDecision(BaseModel):
+    """A person's call on a step the harness stopped for. See `Harness.resume`."""
+
+    approve: bool
+    option_id: str | None = None
+    """The option approved. Required to approve; ignored to reject."""
+    note: str = ""
+
+    @model_validator(mode="after")
+    def _approval_names_an_option(self) -> Self:
+        if self.approve and not self.option_id:
+            raise ValueError("an approval must name the option_id it approves")
+        return self
+
+
 class WorldState(BaseModel):
     """The running world model. Owned by the harness, written only from what the right produces."""
 
     goal: str
+    """The person's latest message. Earlier ones are in `conversation`."""
     context: str = ""
+    conversation: list[Turn] = Field(default_factory=list)
+    """Earlier exchanges in the same conversation, oldest first."""
     situation: str = ""
     plan: list[str] = Field(default_factory=list)
     history: list[StepRecord] = Field(default_factory=list)
@@ -292,13 +319,22 @@ class WorldState(BaseModel):
         """The narrow slice handed to the left hemisphere.
 
         A fresh dict on every call, so nothing the left does with it reaches the world model.
+        Of an ongoing conversation it sees only the last exchange, briefly.
         """
         view: dict[str, Any] = {"goal": self.goal, "situation": self.situation}
         if self.context:
             view["context"] = self.context
+        if self.conversation:
+            last = self.conversation[-1]
+            view["previous_exchange"] = {"person": _clip(last.request, 300), "agent": _clip(last.answer, 400)}
         if self.history:
             view["recent_steps"] = [step.summary() for step in self.history[-recent:]]
         return view
+
+
+def _clip(text: str, limit: int) -> str:
+    text = " ".join(text.split())
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
 
 # --- Checking the answer -------------------------------------------------------------------
