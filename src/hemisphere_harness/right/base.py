@@ -1,0 +1,55 @@
+"""The Master's contract."""
+
+from abc import ABC, abstractmethod
+
+from ..schemas import Decision, Evaluation, Plan, Proposal, Reintegration, StepRecord, WorldState
+
+
+class RightHemisphere(ABC):
+    """Holds the whole: the goal, its context, and what everything so far adds up to.
+
+    The right is the only part of the agent that generates. It opens each step by
+    proposing an option space and closes each step by folding the result back into its
+    reading of the situation. In between, the left may narrow the options to one, but
+    whatever the left is not entitled to settle alone comes back here first.
+
+    Every method raises RightHemisphereError on failure. The harness does not catch it.
+    """
+
+    name: str = "right"
+
+    @abstractmethod
+    async def plan(self, state: WorldState) -> Plan:
+        """Read the situation, including what the goal implies but does not say, and sketch a plan."""
+
+    @abstractmethod
+    async def propose(self, state: WorldState) -> Proposal:
+        """Generate two to four candidate next actions, and say how far the left can be trusted with them.
+
+        The proposal's `stakes` and `open_ended` labels are how the right decides whether
+        left-hemisphere precision is enough for this step.
+        """
+
+    @abstractmethod
+    async def evaluate(self, state: WorldState, proposal: Proposal, decision: Decision) -> Evaluation:
+        """Weigh a left verdict in context, before anything is committed.
+
+        Called whenever the left was not allowed to commit alone: the decision was
+        high-stakes or open-ended, the left was unsure, the policy gate objected, or the
+        left failed. Return commit (naming an option), revise, or ask_human.
+        """
+
+    @abstractmethod
+    async def reintegrate(self, state: WorldState, step: StepRecord) -> Reintegration:
+        """Fold a finished step into the whole: rewrite the situation, judge whether the goal is met.
+
+        Called at the end of every step, whatever happened in it. Its result is the only
+        thing the harness ever writes into the world state's `situation`.
+        """
+
+    @abstractmethod
+    async def generate(self, prompt: str, state: WorldState | None = None) -> str:
+        """Free-form text. Anything the agent says in its own words comes from here."""
+
+    async def aclose(self) -> None:
+        """Release any network resources."""
