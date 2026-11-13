@@ -1,5 +1,7 @@
 # Hemisphere Harness
 
+[![PyPI](https://img.shields.io/pypi/v/hemisphere-harness)](https://pypi.org/project/hemisphere-harness/) [![CI](https://github.com/Zaenus/hemisphere-harness/actions/workflows/ci.yml/badge.svg)](https://github.com/Zaenus/hemisphere-harness/actions/workflows/ci.yml) ![Status: experimental](https://img.shields.io/badge/status-experimental-orange)
+
 A small Python agent harness with two unequal parts. A generative LLM leads: it reads the
 situation, proposes options, and decides what results mean. A fast decision model serves:
 it picks among options it is handed and says how sure it is. The harness in between
@@ -44,6 +46,16 @@ The relationship is enforced in code:
 Requires Python 3.11 or newer.
 
 ```bash
+pip install "hemisphere-harness[web]"
+
+hemisphere-harness web                                # the web UI, in your browser
+python -m hemisphere_harness.examples.simple_loop     # the offline demo, in the terminal
+```
+
+To work on the code instead:
+
+```bash
+git clone https://github.com/Zaenus/hemisphere-harness.git && cd hemisphere-harness
 python -m venv .venv && source .venv/bin/activate    # or: uv venv && source .venv/bin/activate
 pip install -e ".[dev]"                               # or: uv pip install -e ".[dev]"
 
