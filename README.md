@@ -83,7 +83,7 @@ The example never touches a real system. Its actions are simulated.
 
 ## Web UI
 
-![A run in the web UI: the right proposes, the left's probabilities against the thresholds, and the gate's verdict](docs/images/web-run.png)
+![The lockout demo in the web UI: the run drawn as a network from the request to the answer, the work folded into one line, and the answer after the check corrected one claim](docs/images/web-run.png)
 
 ```bash
 pip install -e ".[web]"         # already included in .[dev]
@@ -99,9 +99,16 @@ four parts:
   directory you started from, which is the same file the command-line example reads.
 - **New runs.** Each run has a goal, context, an operator policy and a step limit. The
   two demo tickets run offline until a right hemisphere is set up.
-- **A live view of every run.** It shows which hemisphere did what, the left's
-  probabilities against the commit and policy thresholds, each gate's verdict and why,
-  and the right's report.
+- **Each run drawn as a network.** Layers of neurons run from your request to the
+  answer: the plan, every step's options lit by the left's probability and wired to that
+  step's outcome, and the answer's claims coloured by whether they held. While a run is
+  live, signals pulse into the newest layer. Hover a neuron for what it is; click a step
+  to open its details.
+- **Runs that read like a chat.** Your request, then the right hemisphere's answer,
+  formatted like any LLM reply. The work in between is folded into one line that says
+  what is happening now while the run is live, and who settled each step once it is
+  done. Unfold it to see every step: which hemisphere did what, the left's probabilities
+  against the commit and policy thresholds, and each gate's verdict and why.
 - **Sign-off.** When the harness stops for a human, the page shows the flagged options,
   with the right's recommendation and the left's pick. Approving one starts a follow-up
   run with your decision in its context. The harness cannot yet resume the stopped run
@@ -227,6 +234,17 @@ thresholds on the calibrated probability of the chosen option, as those docs rec
 and records `confidence` alongside it. The default thresholds are starting points. Tune
 them on your own decisions.
 
+## Checking the answer
+
+Before you see an answer, the left checks it. The right lists the answer's factual
+claims, the left judges each one with a calibrated yes/no, seeing only your request and
+its context, and the right corrects or qualifies any claim that does not hold. The
+offline demo shows it: the draft for the lockout ticket calls it the customer's first
+lockout, the left doubts that (0.04), and the reply you get says second.
+
+The left judges claims with what it knows, and nothing is looked up, so a claim that
+"holds" is one that is not obviously wrong. `docs/architecture.md` has the details.
+
 ## Providers
 
 The right hemisphere can be any of these. Pick one with `RIGHT_PROVIDER`, name a model
@@ -338,6 +356,7 @@ Set these in the environment or in `.env`. All are optional.
 | `HARNESS_PERMIT_NO_THRESHOLD` | `0.3` | Policy gate: at or below, only a human can approve. |
 | `HARNESS_MAX_STEPS` | `6` | |
 | `HARNESS_POLICY` | empty | Operator policy in plain language. Empty disables the gate. |
+| `HARNESS_CHECK_ANSWERS` | `true` | Check the answer's factual claims with the left before the person sees it. |
 
 The right-hemisphere client sends only `model` and `messages` unless you configure more,
 and it asks for JSON in the prompt instead of relying on `response_format`, so it works

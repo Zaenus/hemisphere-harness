@@ -197,6 +197,8 @@ class CannedLLM(LLMRightHemisphere):
         if not json_reply:
             return "All done."
         shape = messages[-1]["content"].split("SHAPE")[-1]
+        if '"claims"' in shape:
+            return json.dumps({"claims": []})  # nothing worth checking
         if '"goal_met"' in shape:
             return json.dumps({"situation": "Finished.", "goal_met": True})
         if '"open_ended"' in shape:
@@ -215,7 +217,7 @@ async def test_a_provider_that_only_implements_complete_drives_the_whole_loop(cl
     assert isinstance(right, CannedLLM) and right.model == "canned-1"
     assert result.status is RunStatus.DONE
     assert result.report == "All done."
-    assert len(right.chats) == 4  # plan, propose, reintegrate, report
+    assert len(right.chats) == 5  # plan, propose, reintegrate, answer, and the answer's claims
 
 
 # --- The registry ------------------------------------------------------------------------

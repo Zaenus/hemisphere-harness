@@ -8,6 +8,9 @@ type it asks for.
 from pydantic import BaseModel
 
 from ..schemas import (
+    Claim,
+    ClaimCheck,
+    ClaimList,
     Decision,
     Evaluation,
     Option,
@@ -31,7 +34,10 @@ You are paired with a left hemisphere, the Emissary: a fast decision model that 
 among options you define and reports calibrated probabilities. It cannot generate anything. \
 It sees only a narrow slice of the situation, and it has no sense of what lies outside the \
 options it is handed. Treat its verdicts as evidence to weigh in context. They are never \
-the last word."""
+the last word.
+
+The person you work for talks to one agent, not to its parts. Whenever you write for them, \
+speak as that one agent, in the first person, and keep the division of labour out of it."""
 
 JSON_ONLY = "Reply with a single JSON object and nothing else: no prose around it, no code fences."
 
@@ -167,6 +173,67 @@ def reintegrate_prompt(state: WorldState, step: StepRecord) -> str:
         ],
         shape=_REINTEGRATION_SHAPE,
     )
+
+
+MAX_CLAIMS = 8
+
+_CLAIMS_SHAPE = ClaimList(
+    claims=[
+        Claim(text="A single factual statement from the reply, understandable on its own"),
+        Claim(text="Another one"),
+    ]
+)
+
+
+def claims_prompt(state: WorldState, answer: str) -> str:
+    return _task(
+        _request(state),
+        f"YOUR DRAFT REPLY\n{answer}",
+        task=(
+            "List the factual claims in your draft that could be wrong, so that they can be "
+            "checked independently before the person sees the reply."
+        ),
+        fields=[
+            f"claims: at most {MAX_CLAIMS}, most important first. Each one a single statement of fact: "
+            "a number, name, date, definition, or cause and effect. Phrase each so it can be judged "
+            "without the rest of the reply: name what it is about instead of writing 'it' or 'this'.",
+            "Leave out opinions, recommendations, hedged or obviously true statements, and anything "
+            "about what you did during this task. If nothing qualifies, return an empty list.",
+        ],
+        shape=_CLAIMS_SHAPE,
+    )
+
+
+def revise_prompt(state: WorldState, answer: str, checks: list[ClaimCheck]) -> str:
+    lines = []
+    for check in checks:
+        lines.append(f"- [{check.verdict} {check.probability:.2f}] {check.claim.text}")
+    return "\n\n".join(
+        [
+            _request(state),
+            f"YOUR DRAFT REPLY\n{answer}",
+            "INDEPENDENT CHECK OF ITS CLAIMS\n"
+            "Each claim was judged on its own, with only the request and its context, and given "
+            "a probability that it holds.\n" + "\n".join(lines),
+            "TASK\nRewrite the reply in the light of this check. Correct a doubtful claim if you "
+            "know the right fact; otherwise remove it, or say plainly that it is uncertain. Qualify "
+            "an unsure claim. Keep claims that hold. The check is evidence, not the last word: if "
+            "you are certain a doubted claim is right, you may keep it, stated carefully.\n"
+            "Do not add specifics that were not in the draft: no new numbers, names, dates or "
+            "sources. Nothing will check them. Prefer a vaguer true statement to a precise one you "
+            "are unsure of.\n"
+            "Keep the same voice and format: one agent, first person, answering the person "
+            "directly. Do not mention the check, the claims, or any probabilities. Reply with the "
+            "revised reply only.",
+        ]
+    )
+
+
+def _request(state: WorldState) -> str:
+    sections = [f"REQUEST\n{state.goal}"]
+    if state.context:
+        sections.append(f"CONTEXT\n{state.context}")
+    return "\n\n".join(sections)
 
 
 def render_state(state: WorldState) -> str:

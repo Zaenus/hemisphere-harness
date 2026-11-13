@@ -379,3 +379,22 @@ def test_registries_expose_provider_metadata():
     assert right_providers.get("nim").base_url == "https://integrate.api.nvidia.com/v1"
     assert left_providers.get("jev").api_key_env == "JEV_API_KEY"
     assert not left_providers.get("mock").settings
+
+
+async def test_the_lockout_demo_checks_its_answer_and_corrects_it(clean_env, tmp_path):
+    async with client(make_app(tmp_path)) as http:
+        run = await wait_for_end(http, (await http.post("/api/runs", headers=AUTH, json={"demo": "lockout"})).json()["id"])
+    phases = [event["phase"] for event in run["events"]]
+    assert phases[-5:] == ["draft", "check", "revise", "report", "end"]
+    check = next(event for event in run["events"] if event["phase"] == "check")
+    assert [c["verdict"] for c in check["data"]["checks"]] == ["holds", "doubtful"]
+    assert "second lockout" in run["report"] and "first lockout" not in run["report"]
+
+
+async def test_with_the_mock_left_a_live_run_does_not_check_answers(clean_env, tmp_path, monkeypatch):
+    monkeypatch.setattr(runs_module, "build_right", lambda s: ScriptedRightHemisphere(plan=Plan(situation="s"), proposals=[]))
+    clean_env.setenv("RIGHT_MODEL", "anything")  # the left stays the mock
+    async with client(make_app(tmp_path)) as http:
+        run = (await http.post("/api/runs", headers=AUTH, json={"goal": "g"})).json()
+        await wait_for_end(http, run["id"])
+    assert run["config"]["check_answers"] is False

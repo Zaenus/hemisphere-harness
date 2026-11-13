@@ -69,6 +69,7 @@ FIELDS: tuple[Field, ...] = (
     Field("HARNESS_PERMIT_NO_THRESHOLD", "Policy: refused at or below", "number", help="Only a human can approve an option the policy gate refuses."),
     Field("HARNESS_MAX_STEPS", "Maximum steps", "number"),
     Field("HARNESS_POLICY", "Operator policy", "longtext", help="Plain language. Leave empty to turn the policy gate off."),
+    Field("HARNESS_CHECK_ANSWERS", "Check answers before showing them", "bool", help="The left judges each factual claim in the answer; the right revises those that do not hold. Off when the left is the mock."),
 )  # fmt: skip
 
 FIELDS_BY_NAME = {field.name: field for field in FIELDS}

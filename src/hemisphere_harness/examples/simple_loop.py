@@ -19,6 +19,7 @@ from typing import Any
 from hemisphere_harness import (
     Answer,
     ChoiceAnswer,
+    Claim,
     Evaluation,
     Harness,
     HarnessError,
@@ -64,8 +65,11 @@ async def run_ticket(ticket: Ticket, settings: Settings) -> RunResult:
         right, left = build_right(settings), build_left(settings)
         mode = f"right = {right.name} ({settings.right_model}) · left = {left.name}"
         # The heuristic mock answers every yes/no question 0.5, so a policy gate would send
-        # every step back to the right. Use the ticket's policy only when something can judge it.
-        if not isinstance(left, MockLeftHemisphere):
+        # every step back to the right, and every claim in the answer would look unsure. Use
+        # the ticket's policy and the answer check only when something can judge them.
+        if isinstance(left, MockLeftHemisphere):
+            config.check_answers = False
+        else:
             config.policy = config.policy or ticket.policy
     else:
         right = ScriptedRightHemisphere(**ticket.right)
@@ -172,7 +176,17 @@ LOCKOUT = Ticket(
                 goal_met=True,
             ),
         ],
+        # The draft answer gets one fact wrong. The check catches it, and the revision fixes it.
         report=(
+            "Ticket #4812: the account had been locked after five failed sign-ins following the "
+            "reset. I cleared the lock and told the customer. This was their first lockout, so "
+            "I closed the ticket."
+        ),
+        claims=[
+            Claim(text="An account lockout after five failed sign-ins blocks a correct new password until the lock is cleared."),
+            Claim(text="This is customer Dana R.'s first account lockout this month."),
+        ],
+        revision=(
             "Ticket #4812: the account had been locked after five failed sign-ins following the "
             "reset. I cleared the lock and told the customer. The ticket stays open until they "
             "confirm they are back in, since this is their second lockout this month."
@@ -191,6 +205,10 @@ LOCKOUT = Ticket(
             "select": ChoiceAnswer.from_probabilities({"reply_and_close": 0.56, "reply_and_wait": 0.44}),
             "permit:reply_and_close": NoulAnswer(probability=0.98),
             "permit:reply_and_wait": NoulAnswer(probability=0.98),
+        },
+        {  # the check of the draft answer: the context says this is the second lockout
+            "claim:c1": NoulAnswer(probability=0.93),
+            "claim:c2": NoulAnswer(probability=0.04),
         },
     ],
     outcomes={
@@ -257,6 +275,7 @@ REFUND = Ticket(
             "it. The refund is above the $500 limit, so nothing has been sent. They have "
             "threatened a chargeback today."
         ),
+        claims=[Claim(text="Northwind Logistics' refund terms give a full refund within 14 days of renewal.")],
     ),
     left=[
         {
@@ -266,7 +285,8 @@ REFUND = Ticket(
             "permit:full_refund": NoulAnswer(probability=0.03),
             "permit:prorated_refund": NoulAnswer(probability=0.04),
             "permit:offer_credit": NoulAnswer(probability=0.05),
-        }
+        },
+        {"claim:c1": NoulAnswer(probability=0.97)},
     ],
 )
 

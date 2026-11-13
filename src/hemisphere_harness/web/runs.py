@@ -136,6 +136,8 @@ class RunManager:
                     config.policy = config.policy or ticket.policy
             else:
                 config.policy = settings.harness_policy if request.policy is None else request.policy.strip()
+            if isinstance(left, MockLeftHemisphere):
+                config.check_answers = False  # it would call every claim unsure
         elif ticket:
             right = ScriptedRightHemisphere(**ticket.right)
             left = MockLeftHemisphere(script=ticket.left)

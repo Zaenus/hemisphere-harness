@@ -121,7 +121,7 @@ p { margin: 0; }
 .nav-item.active { background: var(--sunken); font-weight: 600; }
 
 .hemi-status { display: flex; flex-direction: column; gap: 4px; padding: 0 10px 4px; font-size: 12.5px; }
-.hemi-status .row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.hemi-status .row { display: flex; flex-wrap: nowrap; align-items: center; gap: 8px; min-width: 0; }
 .hemi-status .row span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
 
 /* ---------- Atoms ---------- */
@@ -248,9 +248,6 @@ details.more > .stack { margin-top: 14px; }
 
 /* ---------- Run view ---------- */
 
-.run-head { display: flex; flex-direction: column; gap: 12px; margin-bottom: 22px; }
-.run-head h1 { font-size: 21px; font-weight: 620; letter-spacing: -0.01em; white-space: pre-wrap; overflow-wrap: anywhere; }
-.run-head .actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .context-box { font-size: 14px; color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
 
 .timeline { display: flex; flex-direction: column; gap: 12px; }
@@ -307,8 +304,6 @@ details.more > .stack { margin-top: 14px; }
 .report { font-size: 15px; }
 .report p + p { margin-top: 10px; }
 
-.working { display: flex; align-items: center; gap: 10px; padding: 12px 4px; color: var(--muted); font-size: 14px; }
-.working .dot { margin-top: 0; animation: pulse 1.2s ease-in-out infinite; }
 
 .end-banner { display: flex; gap: 14px; align-items: flex-start; padding: 16px 18px; border-radius: var(--radius); margin-top: 6px; }
 .end-banner.done { background: var(--ok-soft); }
@@ -321,6 +316,108 @@ details.more > .stack { margin-top: 14px; }
 .signoff { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
 .signoff .option { background: var(--panel); border: 1px solid var(--border); }
 .signoff .option.chosen { outline: 1.5px solid var(--harness); background: var(--panel); }
+
+/* ---------- Run as a chat ---------- */
+
+.chat { display: flex; flex-direction: column; gap: 26px; }
+.msg-user { display: flex; justify-content: flex-end; }
+.msg-user .bubble {
+  max-width: min(640px, 88%); background: var(--sunken); border-radius: 20px 20px 6px 20px;
+  padding: 12px 18px; display: flex; flex-direction: column; gap: 6px;
+}
+.bubble-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.msg-user .context-box { margin-top: 8px; font-size: 13.5px; }
+details.more.small > summary { font-size: 13px; }
+.msg-assistant { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.assistant-head { display: flex; align-items: center; gap: 10px; font-weight: 620; }
+
+.work { border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); }
+.work-toggle {
+  display: flex; align-items: center; gap: 10px; width: 100%; padding: 10px 14px;
+  border: 0; background: none; cursor: pointer; text-align: left; color: var(--muted);
+  font-size: 14px; border-radius: var(--radius);
+}
+.work-toggle:hover { background: var(--sunken); }
+.work-toggle > svg { transition: transform 0.15s; }
+.work.open .work-toggle > svg { transform: rotate(90deg); }
+.work.open .work-toggle { border-radius: var(--radius) var(--radius) 0 0; }
+.work-toggle .dot { margin-top: 0; }
+.work-line { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.work-count { flex: none; font-size: 13px; color: var(--faint); }
+.work-body { padding: 4px 14px 16px; border-top: 1px solid var(--border); background: var(--bg); border-radius: 0 0 var(--radius) var(--radius); }
+.dot.live { animation: pulse 1.2s ease-in-out infinite; }
+
+.answer { font-size: 15.5px; line-height: 1.7; overflow-wrap: anywhere; }
+.md > * + * { margin-top: 12px; }
+.md h3 { font-size: 18px; margin-top: 22px; }
+.md h4 { font-size: 15.5px; margin-top: 18px; }
+.md > :first-child { margin-top: 0; }
+.md ul, .md ol { padding-left: 24px; margin-bottom: 0; }
+.md li + li { margin-top: 4px; }
+.md code { background: var(--sunken); padding: 1px 6px; border-radius: 6px; }
+.md pre { background: var(--sunken); padding: 12px 14px; border-radius: var(--radius-sm); overflow-x: auto; }
+.md pre code { background: none; padding: 0; }
+.md hr { border: 0; border-top: 1px solid var(--border); }
+.md .table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.md table { border-collapse: collapse; width: 100%; font-size: 14px; line-height: 1.5; }
+.md th, .md td { text-align: left; vertical-align: top; padding: 8px 12px; border-bottom: 1px solid var(--border); overflow-wrap: normal; hyphens: auto; }
+.md th:first-child, .md td:first-child { min-width: 9em; }
+.md th { background: var(--sunken); font-weight: 620; }
+.md tr:last-child td { border-bottom: 0; }
+.answer .notice { margin-top: 12px; }
+
+.answer-foot { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.answer-foot .spacer { flex: 1; }
+.typing { display: flex; gap: 6px; padding: 8px 0; }
+.typing span { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); animation: pulse 1.2s ease-in-out infinite; }
+.typing span:nth-child(2) { animation-delay: 0.2s; }
+.typing span:nth-child(3) { animation-delay: 0.4s; }
+
+/* ---------- The run as a network ---------- */
+
+.network {
+  overflow-x: auto; padding: 6px 4px 2px; border: 1px solid var(--border); border-radius: var(--radius);
+  background:
+    radial-gradient(circle at 1px 1px, color-mix(in srgb, var(--faint) 35%, transparent) 1px, transparent 0) 0 0 / 16px 16px,
+    var(--panel);
+}
+.network svg.net { display: block; margin: 0 auto; overflow: visible; }
+.net .edge { fill: none; stroke: var(--faint); }
+.net .edge.path { stroke: var(--text); }
+.net .edge.fresh { stroke: var(--right); stroke-dasharray: 5 9; animation: flow 0.9s linear infinite; }
+@keyframes flow { to { stroke-dashoffset: -28; } }
+.net .layer-label { font: 600 10.5px var(--font); fill: var(--faint); text-transform: uppercase; letter-spacing: 0.06em; }
+.net .neuron circle { stroke: var(--panel); stroke-width: 2; fill: var(--faint); }
+.net .neuron.input circle { fill: var(--muted); }
+.net .neuron.right circle, .net .neuron.outcome.right circle { fill: var(--right); }
+.net .neuron.option circle { fill: var(--left); }
+.net .neuron.option.chosen circle { stroke: var(--text); stroke-width: 2.5; }
+.net .neuron.outcome.left circle { fill: var(--left); }
+.net .neuron.outcome.human circle { fill: var(--harness); }
+.net .neuron.outcome.revise circle, .net .neuron.outcome.pending circle { fill: var(--faint); }
+.net .neuron.claim.holds circle { fill: var(--ok); }
+.net .neuron.claim.unsure circle { fill: var(--faint); }
+.net .neuron.claim.doubtful circle { fill: var(--danger); }
+.net .neuron.claim.pending circle { fill: var(--border-strong); }
+.net .neuron.output circle { fill: var(--primary); }
+.net .activation { font: 700 8.5px var(--font); fill: var(--text); pointer-events: none; }
+.net .activation.on { fill: #fff; }
+.net .neuron.active circle { animation: glow 1.2s ease-in-out infinite; }
+@keyframes glow { 50% { opacity: 0.45; } }
+.net .neuron.clickable { cursor: pointer; }
+.net .neuron.clickable:hover circle, .net .neuron.clickable:focus-visible circle { stroke: var(--focus); stroke-width: 3; }
+.net .neuron:focus { outline: none; }
+
+.claims { display: flex; flex-direction: column; gap: 10px; margin-top: 8px; }
+.claim-row { display: flex; flex-direction: column; gap: 4px; }
+.claim-text { font-size: 14px; overflow-wrap: anywhere; }
+.claim-bar { display: grid; grid-template-columns: 1fr 40px auto; gap: 10px; align-items: center; font-size: 13px; }
+.claim-bar .val { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
+.draft-box { margin-top: 10px; padding: 12px 14px; border-radius: var(--radius-sm); background: var(--sunken); font-size: 14px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .net .edge.fresh, .net .neuron.active circle, .dot.running, .dot.live, .typing span { animation: none; }
+}
 
 /* ---------- Settings modal ---------- */
 

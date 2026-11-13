@@ -351,6 +351,9 @@ const PHASES = {
   evaluate: "Evaluates",
   act: "Acts",
   reintegrate: "Reintegrates",
+  draft: "Drafts the answer",
+  check: "Checks the claims",
+  revise: "Revises the answer",
   report: "Report",
   end: "End",
 };
@@ -391,69 +394,180 @@ async function showRun(id) {
   if (run.status === "running") view.listen();
 }
 
+const STEPS_PREFERENCE = "hh.showSteps";
+
+function stepsOpenPreference() {
+  try {
+    return localStorage.getItem(STEPS_PREFERENCE) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function rememberStepsOpen(open) {
+  try {
+    localStorage.setItem(STEPS_PREFERENCE, open ? "1" : "0");
+  } catch {
+    // storage unavailable: the toggle still works for this page
+  }
+}
+
+// A run reads like a chat: your request, the harness's work folded into one line, then
+// the right hemisphere's answer.
 class RunView {
   constructor(run) {
     this.run = run;
     this.steps = new Map();
+    this.open = false;
     this.timeline = h("div", { class: "timeline" });
-    this.working = h("div", { class: "working" });
-    this.footer = h("div", {});
-    this.head = h("div", { class: "run-head" });
-    this.root = h("div", { class: "page" }, this.head, this.timeline, this.working, this.footer);
-    this.renderHead();
+    this.workDot = h("span", { class: "dot", hidden: true });
+    this.workLine = h("span", { class: "work-line" });
+    this.workCount = h("span", { class: "work-count" });
+    this.toggle = h("button", { class: "work-toggle", type: "button", "aria-expanded": "false", onclick: () => this.setOpen(!this.open) },
+      icon("chevron"), this.workDot, this.workLine, this.workCount);
+    this.workBody = h("div", { class: "work-body", hidden: true }, this.timeline);
+    this.work = h("section", { class: "work", "aria-label": "How the harness worked" }, this.toggle, this.workBody);
+    this.net = h("div", { class: "network" });
+    this.stepHeads = new Map();
+    this.answer = h("div", { class: "answer" });
+    this.foot = h("div", { class: "answer-foot" });
+    this.after = h("div", { class: "stack" });
+    this.root = h("div", { class: "page chat" },
+      this.userMessage(),
+      h("div", { class: "msg-assistant" },
+        h("div", { class: "assistant-head" }, h("img", { src: "/favicon.svg", alt: "", width: 22, height: 22 }), "Hemisphere Harness"),
+        this.net, this.work, this.answer, this.foot, this.after));
     for (const event of run.events) this.add(event);
-    this.renderEnd();
+    this.setOpen(stepsOpenPreference(), false);
+    this.refresh();
   }
 
-  renderHead() {
+  userMessage() {
+    const run = this.run;
+    const extras = [run.context ? "context" : null, run.policy ? "policy" : null].filter(Boolean);
+    return h("div", { class: "msg-user" },
+      h("div", { class: "bubble" },
+        h("div", { class: "bubble-text" }, run.goal),
+        extras.length
+          ? h("details", { class: "more small" },
+            h("summary", {}, icon("chevron"), extras.join(" and ")),
+            run.context ? h("div", { class: "context-box" }, run.context) : null,
+            run.policy ? h("div", { class: "context-box" }, h("strong", {}, "Policy: "), run.policy) : null)
+          : null));
+  }
+
+  setOpen(open, remember = true) {
+    this.open = open;
+    this.workBody.hidden = !open;
+    this.work.classList.toggle("open", open);
+    this.toggle.setAttribute("aria-expanded", String(open));
+    if (remember) rememberStepsOpen(open);
+    this.updateCount();
+  }
+
+  updateCount() {
+    const steps = new Set(this.run.events.filter((e) => e.step !== null && e.step !== undefined).map((e) => e.step)).size;
+    this.workCount.textContent = this.open ? "Hide steps" : steps ? `Show ${steps} step${steps === 1 ? "" : "s"}` : "Show details";
+  }
+
+  renderNetwork() {
+    const element = renderNetwork(this.run, { onSelect: (step) => this.showStep(step), available: (this.net.clientWidth || 832) - 24 }); // slack for a page scrollbar appearing later
+    const atEnd = this.net.scrollLeft + this.net.clientWidth >= this.net.scrollWidth - 4;
+    clear(this.net).append(element);
+    if (this.run.status === "running" && atEnd) this.net.scrollLeft = this.net.scrollWidth;
+  }
+
+  showStep(step) {
+    this.setOpen(true);
+    const head = this.stepHeads.get(step);
+    if (head) head.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  refresh() {
     const run = this.run;
     const running = run.status === "running";
-    const c = run.config;
-    clear(this.head).append(
-      h("div", { class: "chips" },
-        h("span", { class: `chip status-${run.status}` }, running ? h("span", { class: "dot running" }) : null, STATUS[run.status] || run.status),
-        h("span", { class: "chip right", title: "Right hemisphere" }, run.right),
-        h("span", { class: "chip left", title: "Left hemisphere" }, run.left),
-        run.left_experimental ? h("span", { class: "chip warn" }, "experimental left") : null,
-        run.policy ? h("span", { class: "chip harness", title: run.policy }, "policy on") : h("span", { class: "chip" }, "no policy"),
-        h("span", { class: "chip", title: "Commit threshold · policy thresholds · step limit" },
-          `commit ≥ ${fmt(c.commit_threshold)} · max ${c.max_steps} steps`),
-        h("span", { class: "chip" }, "simulated actions")),
-      h("h1", {}, run.goal),
-      run.context ? h("details", { class: "more" }, h("summary", {}, icon("chevron"), "Context"), h("div", { class: "context-box stack" }, run.context)) : null,
-      run.policy ? h("details", { class: "more" }, h("summary", {}, icon("chevron"), "Operator policy"), h("div", { class: "context-box stack" }, run.policy)) : null,
-      h("div", { class: "actions" },
-        running
-          ? h("button", { class: "btn small danger", type: "button", onclick: () => this.stop() }, icon("stop"), "Stop")
-          : h("button", { class: "btn small", type: "button", onclick: () => this.again() }, icon("again"), "Run again"),
-        running ? null : h("button", { class: "btn small ghost", type: "button", onclick: () => this.remove() }, icon("trash"), "Delete")),
-    );
+    this.renderNetwork();
+
+    if (running) {
+      const [actor, text] = nextActivity(run);
+      this.workDot.className = `dot ${actor} live`;
+      this.workDot.hidden = false;
+      this.workLine.textContent = text;
+    } else {
+      this.workDot.hidden = true;
+      this.workLine.textContent = workSummary(run);
+      this.workLine.title = this.workLine.textContent;
+    }
+    this.updateCount();
+
+    const reportEvent = run.events.find((event) => event.phase === "report");
+    const report = reportEvent ? (reportEvent.data.report ?? reportEvent.summary) : run.report;
+    clear(this.answer);
+    if (report) this.answer.append(renderMarkdown(report));
+    else if (running) this.answer.append(h("div", { class: "typing", "aria-label": "Working" }, h("span"), h("span"), h("span")));
+    else if (run.status === "cancelled") this.answer.append(h("p", { class: "muted" }, "Stopped before the right hemisphere wrote its answer."));
+    if (run.error && run.status === "failed") {
+      this.answer.append(h("div", { class: "notice danger" }, icon("alert"),
+        h("div", { class: "grow" }, h("strong", {}, "The run failed."), h("div", { class: "output" }, run.error))));
+    }
+
+    append(clear(this.foot), [
+      h("span", { class: `chip status-${run.status}` }, STATUS[run.status] || run.status),
+      h("span", { class: "chip right", title: "Right hemisphere" }, run.right),
+      h("span", { class: "chip left", title: "Left hemisphere" }, run.left),
+      run.left_experimental ? h("span", { class: "chip warn" }, "experimental left") : null,
+      h("span", { class: "spacer" }),
+      report && !running ? h("button", { class: "btn small ghost", type: "button", onclick: () => this.copy(report) }, "Copy") : null,
+      running
+        ? h("button", { class: "btn small danger", type: "button", onclick: () => this.stop() }, icon("stop"), "Stop")
+        : h("button", { class: "btn small ghost", type: "button", onclick: () => this.again() }, icon("again"), "Run again"),
+      running ? null : h("button", { class: "btn small ghost", type: "button", onclick: () => this.remove() }, icon("trash"), "Delete")]);
+
+    clear(this.after);
+    if (run.status === "needs_human") {
+      this.after.append(h("div", { class: "end-banner needs_human" }, icon("alert"),
+        h("div", { class: "grow" }, h("h3", {}, "Waiting for your sign-off"), signOff(run))));
+    } else if (run.status === "max_steps") {
+      this.after.append(h("div", { class: "notice info" }, icon("info"),
+        h("div", { class: "grow" }, `Stopped at the step limit of ${run.config.max_steps}. Run again with more steps to go further.`)));
+    }
   }
 
   listen() {
     const after = this.run.events.length - 1;
     const source = new EventSource(`/api/runs/${encodeURIComponent(this.run.id)}/events?after=${after}`);
     state.source = source;
-    this.setWorking();
     source.addEventListener("trace", (message) => {
+      const main = document.getElementById("main");
+      const atBottom = main.scrollHeight - main.scrollTop - main.clientHeight < 80;
       const event = JSON.parse(message.data);
       this.run.events.push(event);
       this.add(event);
-      this.setWorking();
+      this.refresh();
+      if (atBottom) main.scrollTop = main.scrollHeight;
     });
     source.addEventListener("end", (message) => {
       Object.assign(this.run, JSON.parse(message.data));
       source.close();
       if (state.source === source) state.source = null;
-      this.renderHead();
-      this.renderEnd();
+      this.refresh();
       refreshRuns();
     });
     source.addEventListener("error", () => {
       if (source.readyState === EventSource.CLOSED) {
-        clear(this.working).append(h("span", { class: "faint" }, "Lost the connection to the server. Reload to reconnect."));
+        this.workDot.hidden = true;
+        this.workLine.textContent = "Lost the connection to the server. Reload to reconnect.";
       }
     });
+  }
+
+  async copy(text) {
+    try {
+      await navigator.clipboard.writeText(text);
+      toast("Copied");
+    } catch {
+      toast("Could not copy: the browser refused.", "error");
+    }
   }
 
   async stop() {
@@ -489,51 +603,153 @@ class RunView {
     if (step === null || step === undefined) return this.timeline;
     if (!this.steps.has(step)) {
       const group = h("div", { class: "timeline" });
-      this.timeline.append(h("div", { class: "step-head" }, `Step ${step}`), group);
+      const head = h("div", { class: "step-head" }, `Step ${step}`);
+      this.timeline.append(head, group);
       this.steps.set(step, group);
+      this.stepHeads.set(step, head);
     }
     return this.steps.get(step);
   }
 
   add(event) {
-    if (event.phase === "end") return; // shown by renderEnd
-    const card = renderEvent(event, this.run);
-    this.container(event.step).append(card);
+    if (event.phase === "end" || event.phase === "report") return; // the report is the answer
+    this.container(event.step).append(renderEvent(event, this.run));
   }
+}
 
-  setWorking() {
-    clear(this.working);
-    if (this.run.status !== "running") return;
-    const [actor, text] = nextActivity(this.run);
-    this.working.append(h("span", { class: `dot ${actor}` }), text);
+// One line for a finished run: how many steps, and who settled them.
+function workSummary(run) {
+  const steps = new Set(run.events.filter((e) => e.step !== null && e.step !== undefined).map((e) => e.step)).size;
+  const final = new Map();
+  for (const event of run.events) {
+    if (event.phase === "gate" && event.data.decision) final.set(event.step, event.data.decision);
   }
+  const count = { left: 0, right: 0, revise: 0, human: 0 };
+  for (const decision of final.values()) {
+    if (decision.outcome === "proceed") count[decision.committed_by === "left" ? "left" : "right"] += 1;
+    else if (decision.outcome === "revise") count.revise += 1;
+    else if (decision.outcome === "flag_human") count.human += 1;
+  }
+  const parts = [];
+  const check = run.events.find((e) => e.phase === "check" && e.data.checks);
+  const revised = run.events.some((e) => e.phase === "revise" && e.data.revised);
+  if (count.left) parts.push(`the left committed ${count.left}`);
+  if (count.right) parts.push(`the right decided ${count.right}`);
+  if (count.revise) parts.push(`${count.revise} revised`);
+  if (count.human) parts.push(`${count.human} waiting for you`);
+  if (!steps) return run.events.length ? "Planned, no steps taken" : "Did not start";
+  let line = `${steps} step${steps === 1 ? "" : "s"}${parts.length ? ": " + parts.join(", ") : ""}`;
+  if (check) {
+    const n = check.data.checks.length;
+    const held = check.data.checks.filter((c) => c.verdict === "holds").length;
+    const unsure = check.data.checks.filter((c) => c.verdict === "unsure").length;
+    const verdicts = [`${held} held`, unsure ? `${unsure} unsure` : null, n - held - unsure ? `${n - held - unsure} doubtful` : null].filter(Boolean);
+    line += ` · ${n} claim${n === 1 ? "" : "s"} checked: ${verdicts.join(", ")}${revised ? ", answer revised" : ""}`;
+  }
+  return line;
+}
 
-  renderEnd() {
-    clear(this.working);
-    clear(this.footer);
-    if (this.run.status === "running") {
-      this.setWorking();
-      return;
+// Markdown for the answer, built as DOM nodes. Never parsed as HTML.
+function renderMarkdown(text) {
+  const root = h("div", { class: "md" });
+  const lines = String(text).replace(/\r\n?/g, "\n").split("\n");
+  let paragraph = [];
+  let list = null;
+
+  const flush = () => {
+    if (paragraph.length) {
+      const p = h("p");
+      paragraph.forEach((line, index) => {
+        if (index) p.append(h("br"));
+        append(p, inline(line));
+      });
+      root.append(p);
+      paragraph = [];
     }
-    const run = this.run;
-    const end = run.events.find((event) => event.phase === "end");
-    const steps = end ? end.data.steps : run.events.filter((e) => e.phase === "reintegrate").length;
-    const titles = {
-      done: "The right judged the goal met.",
-      needs_human: "Stopped for a human. Nothing in the flagged step was done.",
-      max_steps: "Stopped at the step limit.",
-      failed: "The run failed.",
-      cancelled: "Stopped before it finished.",
-    };
-    const banner = h("div", { class: `end-banner ${run.status}` },
-      icon(run.status === "done" ? "check" : run.status === "failed" ? "alert" : "info"),
-      h("div", { class: "grow" },
-        h("h3", {}, titles[run.status] || run.status),
-        h("div", { class: "muted" }, `${steps} step${steps === 1 ? "" : "s"}`, run.finished ? ` · finished ${relativeTime(run.finished)}` : ""),
-        run.error ? h("div", { class: "output" }, run.error) : null,
-        run.status === "needs_human" ? signOff(run) : null));
-    this.footer.append(banner);
+  };
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (/^\s*```/.test(line)) {
+      flush();
+      list = null;
+      const code = [];
+      for (i += 1; i < lines.length && !/^\s*```/.test(lines[i]); i += 1) code.push(lines[i]);
+      root.append(h("pre", {}, h("code", {}, code.join("\n"))));
+      continue;
+    }
+    if (!line.trim()) {
+      flush();
+      list = null;
+      continue;
+    }
+    const heading = line.match(/^\s*(#{1,6})\s+(.*)$/) || line.match(/^\s*()\*\*([^*]+)\*\*:?\s*$/);
+    if (heading) {
+      flush();
+      list = null;
+      root.append(h(heading[1].length && heading[1].length <= 2 ? "h3" : "h4", {}, inline(heading[2])));
+      continue;
+    }
+    if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
+      flush();
+      list = null;
+      root.append(h("hr"));
+      continue;
+    }
+    if (/^\s*\|.*\|\s*$/.test(line) && i + 1 < lines.length && /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/.test(lines[i + 1])) {
+      flush();
+      list = null;
+      const cells = (row) => row.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => c.trim());
+      const head = h("tr", {}, cells(line).map((c) => h("th", {}, inline(c))));
+      const body = h("tbody");
+      for (i += 2; i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i]); i += 1) {
+        body.append(h("tr", {}, cells(lines[i]).map((c) => h("td", {}, inline(c)))));
+      }
+      i -= 1;
+      root.append(h("div", { class: "table-wrap" }, h("table", {}, h("thead", {}, head), body)));
+      continue;
+    }
+    const bullet = line.match(/^\s*[-*•+]\s+(.*)$/);
+    const ordered = line.match(/^\s*(\d+)[.)]\s+(.*)$/);
+    if (bullet || ordered) {
+      flush();
+      const tag = bullet ? "ul" : "ol";
+      if (!list || list.tagName.toLowerCase() !== tag) {
+        list = h(tag, ordered ? { start: ordered[1] } : {});
+        root.append(list);
+      }
+      list.append(h("li", {}, inline(bullet ? bullet[1] : ordered[2])));
+      continue;
+    }
+    if (list && /^\s{2,}\S/.test(line)) {
+      append(list.lastChild, " ", inline(line.trim()));
+      continue;
+    }
+    list = null;
+    paragraph.push(line.trim());
   }
+  flush();
+  return root;
+}
+
+function inline(text) {
+  const out = [];
+  // Bold, inline code, *italic*, and http(s) links. Single underscores are left alone,
+  // because option ids such as process_refund are full of them.
+  const pattern = /(\*\*[^*\n]+?\*\*|`[^`\n]+`|\*[^*\s][^*\n]*?\*|\[[^\]\n]+\]\((https?:\/\/[^\s)]+)\))/g;
+  let last = 0;
+  let match;
+  while ((match = pattern.exec(text))) {
+    if (match.index > last) out.push(text.slice(last, match.index));
+    const token = match[0];
+    if (token.startsWith("**")) out.push(h("strong", {}, inline(token.slice(2, -2))));
+    else if (token.startsWith("`")) out.push(h("code", {}, token.slice(1, -1)));
+    else if (token.startsWith("[")) out.push(h("a", { href: match[2], target: "_blank", rel: "noopener noreferrer" }, token.slice(1, token.indexOf("]("))));
+    else out.push(h("em", {}, inline(token.slice(1, -1))));
+    last = match.index + token.length;
+  }
+  if (last < text.length) out.push(text.slice(last));
+  return out;
 }
 
 function nextActivity(run) {
@@ -561,8 +777,16 @@ function nextActivity(run) {
       const gate = [...events].reverse().find((e) => e.phase === "gate" && e.step === step);
       const flagged = gate && gate.data.decision && gate.data.decision.outcome === "flag_human";
       const met = last.data.reintegration && last.data.reintegration.goal_met;
-      if (flagged || met || step >= run.config.max_steps) return ["right", "The right is writing its report…"];
+      if (flagged || met || step >= run.config.max_steps) return ["right", "The right is writing the answer…"];
       return ["right", `The right is proposing options for step ${step + 1}…`];
+    }
+    case "draft": {
+      const n = (last.data.claims || []).length;
+      return n ? ["left", `The left is checking ${n} claim${n === 1 ? "" : "s"} in the answer…`] : ["harness", "Finishing…"];
+    }
+    case "check": {
+      const weak = (last.data.checks || []).filter((c) => c.verdict !== "holds").length;
+      return weak ? ["right", `The right is revising ${weak} claim${weak === 1 ? "" : "s"} that did not hold…`] : ["harness", "Finishing…"];
     }
     default:
       return ["harness", "Finishing…"];
@@ -663,6 +887,42 @@ function renderEvent(event, run) {
         h("div", { class: "text" }, r.situation),
         h("div", { class: "chips spaced" }, h("span", { class: `chip ${r.goal_met ? "ok" : ""}` }, r.goal_met ? "goal met" : "goal not yet met")));
     }
+    case "draft": {
+      if (!d.draft) return fallback(event, card);
+      const claims = d.claims || [];
+      return card(null,
+        h("div", { class: "sub" }, `Drafted the answer and listed ${claims.length} factual claim${claims.length === 1 ? "" : "s"} for the left to check.`),
+        h("details", { class: "more" }, h("summary", {}, icon("chevron"), "The draft, before the check"),
+          h("div", { class: "draft-box" }, renderMarkdown(d.draft))));
+    }
+    case "check": {
+      if (d.error !== undefined) {
+        return card(null, h("div", { class: "notice warn" }, icon("alert"),
+          h("div", { class: "grow" }, h("strong", {}, "The check could not run, so the draft stands. "), h("div", { class: "output" }, d.error))));
+      }
+      if (!d.checks) return fallback(event, card);
+      const t = d.thresholds || { holds: run.config.permit_yes_threshold, doubtful: run.config.permit_no_threshold };
+      const meta = `${d.model}${d.latency_ms != null ? ` · ${Math.round(d.latency_ms)} ms` : ""}`;
+      return card(meta,
+        h("div", { class: "bars-title" }, "Does each claim hold? ", h("span", { class: "faint" }, `(doubtful ≤ ${fmt(t.doubtful)} · holds ≥ ${fmt(t.holds)})`)),
+        h("div", { class: "claims" }, d.checks.map((c) => {
+          const fill = h("div", { class: `bar-fill ${c.verdict === "holds" ? "allowed" : c.verdict === "doubtful" ? "refused" : "unsure"}` });
+          fill.style.width = pct(c.probability);
+          const track = h("div", { class: "bar-track" }, fill);
+          for (const m of [t.doubtful, t.holds]) {
+            const marker = h("div", { class: "marker" });
+            marker.style.left = `calc(${pct(m)} - 1px)`;
+            track.append(marker);
+          }
+          return h("div", { class: "claim-row" },
+            h("div", { class: "claim-text" }, c.claim.text),
+            h("div", { class: "claim-bar" }, track, h("span", { class: "val" }, fmt(c.probability)),
+              h("span", { class: `chip ${c.verdict === "holds" ? "ok" : c.verdict === "doubtful" ? "danger" : ""}` }, c.verdict)));
+        })));
+    }
+    case "revise":
+      return card(null, h("div", { class: "text" }, event.summary.replace(/^revised the answer/, "Revised the answer")),
+        event.details.map((line) => h("div", { class: "sub" }, line)));
     case "report": {
       const text = d.report !== undefined ? d.report : event.summary;
       return card(null, h("div", { class: "report" }, text.split(/\n{2,}/).map((p) => h("p", { class: "text" }, p))));
@@ -724,6 +984,173 @@ function signOff(run) {
     h("div", { class: "row" },
       h("button", { class: "btn small", type: "button", onclick: () => followUp(`Human sign-off on step ${step}: none of the offered options (${options.map((o) => o.id).join(", ")}) is approved. Find another way.`) }, "Reject all"),
       h("span", { class: "faint" }, "Starts a new run with your decision added to its context. The harness has no resume yet.")));
+}
+
+// ---------------------------------------------------------------------------------------
+// The run as a network: layers of neurons from the request to the answer. Options are lit
+// by the left's probability, connections are weighted by it, and signals pulse into the
+// newest layer while the run is live. Drawn with DOM calls only.
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+function svg(tag, attrs = {}, ...children) {
+  const el = document.createElementNS(SVG_NS, tag);
+  for (const [key, value] of Object.entries(attrs)) {
+    if (value !== null && value !== undefined && value !== false) el.setAttribute(key, String(value));
+  }
+  for (const child of children.flat()) {
+    if (child === null || child === undefined || child === false) continue;
+    el.append(child instanceof Node ? child : document.createTextNode(String(child)));
+  }
+  return el;
+}
+
+function finalGate(run, step) {
+  const gates = run.events.filter((e) => e.phase === "gate" && e.step === step && e.data.decision);
+  return gates.length ? gates[gates.length - 1].data.decision : null;
+}
+
+function outcomeOf(decision) {
+  if (!decision) return { kind: "pending", title: "Being decided" };
+  const reason = decision.reasons && decision.reasons.length ? `\n${decision.reasons[decision.reasons.length - 1]}` : "";
+  switch (decision.outcome) {
+    case "proceed":
+      return decision.committed_by === "left"
+        ? { kind: "left", title: `The left commits '${decision.option_id}' (p=${fmt(decision.probability)})` }
+        : { kind: "right", title: `The right commits '${decision.option_id}'${reason}` };
+    case "flag_human":
+      return { kind: "human", title: `Waiting for you${reason}` };
+    case "revise":
+      return { kind: "revise", title: `Nothing done; the right will propose again${reason}` };
+    default:
+      return { kind: "pending", title: `Back to the right${reason}` };
+  }
+}
+
+function networkLayers(run) {
+  const events = run.events;
+  const layers = [{ label: "request", nodes: [{ kind: "input", title: run.goal }] }];
+  const plan = events.find((e) => e.phase === "plan");
+  if (plan) layers.push({ label: "plan", nodes: [{ kind: "right", title: (plan.data.plan && plan.data.plan.situation) || plan.summary }] });
+
+  const steps = [...new Set(events.filter((e) => e.step !== null && e.step !== undefined).map((e) => e.step))];
+  for (const step of steps) {
+    const propose = events.find((e) => e.phase === "propose" && e.step === step);
+    const decide = events.find((e) => e.phase === "decide" && e.step === step);
+    const options = (propose && propose.data.proposal && propose.data.proposal.options) || [];
+    if (!options.length) continue;
+    const probabilities = (decide && decide.data.decision && decide.data.decision.probabilities) || {};
+    const decision = finalGate(run, step);
+    const settled = decision && decision.outcome !== "escalate_to_right";
+    layers.push({
+      label: `step ${step}`,
+      step,
+      nodes: options.map((o) => ({
+        kind: "option",
+        p: probabilities[o.id],
+        chosen: settled && decision.option_id === o.id,
+        title: `${o.id}\n${o.description}${probabilities[o.id] !== undefined ? `\nthe left: p=${fmt(probabilities[o.id])}` : ""}`,
+        step,
+        id: o.id,
+      })),
+    });
+    if (decide || decision) {
+      const outcome = outcomeOf(settled ? decision : null);
+      layers.push({ label: "", step, outcome: true, nodes: [{ kind: `outcome ${outcome.kind}`, title: outcome.title, step }] });
+    }
+  }
+
+  const check = events.find((e) => e.phase === "check" && e.data.checks);
+  const draft = events.find((e) => e.phase === "draft" && e.data.claims);
+  if (check) {
+    layers.push({
+      label: "check",
+      check: true,
+      nodes: check.data.checks.map((c) => ({ kind: `claim ${c.verdict}`, p: c.probability, title: `${c.claim.text}\n${c.verdict}, p=${fmt(c.probability)}` })),
+    });
+  } else if (draft) {
+    layers.push({ label: "check", check: true, nodes: draft.data.claims.map((c) => ({ kind: "claim pending", title: c.text })) });
+  }
+  if (events.some((e) => e.phase === "report")) layers.push({ label: "answer", nodes: [{ kind: "output", title: "The answer" }] });
+  return layers;
+}
+
+// The weight of a connection: how much signal the source neuron passes on.
+function edgeWeight(source, target, layer) {
+  if (layer.outcome) return source.p !== undefined ? source.p : 0.3;
+  if (target.kind === "output" && source.p !== undefined) return source.p;
+  return 0.45;
+}
+
+function renderNetwork(run, { onSelect, available = 820 } = {}) {
+  const layers = networkLayers(run);
+  const PAD_X = 34; // room for the outer layers' labels
+  const GAP_X = Math.max(48, Math.min(92, (available - 2 * PAD_X) / Math.max(1, layers.length - 1)));
+  const GAP_Y = 34;
+  const TOP = 30;
+  const tallest = Math.max(...layers.map((l) => l.nodes.length));
+  const height = TOP + Math.max(1, tallest) * GAP_Y + 10;
+  const width = PAD_X * 2 + (layers.length - 1) * GAP_X;
+  const live = run.status === "running";
+
+  layers.forEach((layer, i) => {
+    const x = PAD_X + i * GAP_X;
+    const n = layer.nodes.length;
+    layer.nodes.forEach((node, j) => {
+      node.x = x;
+      node.y = TOP + (height - TOP - 10) / 2 + (j - (n - 1) / 2) * GAP_Y;
+      node.r = node.kind === "option" ? 11 : node.kind.startsWith("claim") ? 8 : 12;
+    });
+  });
+
+  const edges = svg("g", { class: "edges" });
+  for (let i = 1; i < layers.length; i += 1) {
+    const layer = layers[i];
+    const fresh = live && i === layers.length - 1; // signals travel into the newest layer
+    for (const source of layers[i - 1].nodes) {
+      for (const target of layer.nodes) {
+        const w = Math.max(0, Math.min(1, edgeWeight(source, target, layer)));
+        const path = source.chosen && layer.outcome;
+        const mid = (source.x + target.x) / 2;
+        edges.append(svg("path", {
+          d: `M${source.x + source.r} ${source.y} C${mid} ${source.y} ${mid} ${target.y} ${target.x - target.r} ${target.y}`,
+          class: `edge${path ? " path" : ""}${fresh ? " fresh" : ""}`,
+          "stroke-width": (0.6 + 2.6 * w).toFixed(2),
+          "stroke-opacity": (path ? 0.9 : 0.12 + 0.55 * w).toFixed(2),
+        }));
+      }
+    }
+  }
+
+  const nodes = svg("g", { class: "nodes" });
+  layers.forEach((layer, i) => {
+    const last = i === layers.length - 1;
+    if (layer.label) {
+      nodes.append(svg("text", { x: layer.nodes[0].x, y: 14, class: "layer-label", "text-anchor": "middle" }, layer.label));
+    }
+    for (const node of layer.nodes) {
+      const group = svg("g", {
+        class: `neuron ${node.kind}${node.chosen ? " chosen" : ""}${live && last ? " active" : ""}${node.step ? " clickable" : ""}`,
+        tabindex: node.step ? 0 : null,
+        role: node.step ? "button" : null,
+        "aria-label": node.title.split("\n")[0],
+      });
+      group.append(svg("title", {}, node.title));
+      const circle = svg("circle", { cx: node.x, cy: node.y, r: node.r });
+      if (node.p !== undefined && node.kind === "option") circle.setAttribute("fill-opacity", (0.12 + 0.88 * node.p).toFixed(2));
+      group.append(circle);
+      if (node.kind === "option" && node.p !== undefined) {
+        group.append(svg("text", { x: node.x, y: node.y + 3.2, "text-anchor": "middle", class: `activation${node.p >= 0.5 ? " on" : ""}` }, Math.round(node.p * 100)));
+      }
+      if (node.step && onSelect) {
+        group.addEventListener("click", () => onSelect(node.step));
+        group.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onSelect(node.step); } });
+      }
+      nodes.append(group);
+    }
+  });
+
+  return svg("svg", { width, height, viewBox: `0 0 ${width} ${height}`, class: "net", role: "img", "aria-label": "The run drawn as a network, from the request to the answer" }, edges, nodes);
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1117,7 +1544,8 @@ function loopSection() {
           textField("HARNESS_PERMIT_YES_THRESHOLD", { type: "number" }))),
       h("div", { class: "form-grid" },
         textField("HARNESS_COMMIT_THRESHOLD", { type: "number" }),
-        textField("HARNESS_MAX_STEPS", { type: "number" }))));
+        textField("HARNESS_MAX_STEPS", { type: "number" })),
+      boolField("HARNESS_CHECK_ANSWERS")));
 }
 
 function aboutSection() {

@@ -2,7 +2,17 @@
 
 from abc import ABC, abstractmethod
 
-from ..schemas import Decision, Evaluation, Plan, Proposal, Reintegration, StepRecord, WorldState
+from ..schemas import (
+    Claim,
+    ClaimCheck,
+    Decision,
+    Evaluation,
+    Plan,
+    Proposal,
+    Reintegration,
+    StepRecord,
+    WorldState,
+)
 
 
 class RightHemisphere(ABC):
@@ -50,6 +60,21 @@ class RightHemisphere(ABC):
     @abstractmethod
     async def generate(self, prompt: str, state: WorldState | None = None) -> str:
         """Free-form text. Anything the agent says in its own words comes from here."""
+
+    async def claims(self, answer: str, state: WorldState) -> list[Claim]:
+        """The factual claims in a draft answer that are worth checking.
+
+        Each claim must make sense on its own, because the left checks it without seeing
+        the draft. Not abstract: the default lists none, which skips the check.
+        """
+        return []
+
+    async def revise(self, answer: str, checks: list[ClaimCheck], state: WorldState) -> str:
+        """Rewrite a draft answer in the light of the left's check of its claims.
+
+        The check is evidence, not the last word. The default returns the draft unchanged.
+        """
+        return answer
 
     async def aclose(self) -> None:
         """Release any network resources."""

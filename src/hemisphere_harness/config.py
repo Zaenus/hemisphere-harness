@@ -36,6 +36,11 @@ class HarnessConfig(BaseModel):
     policy: str = ""
     """Operator policy in plain language. If set, the left gates every option against it."""
 
+    check_answers: bool = True
+    """Before the person sees the answer, have the left check its factual claims, and the
+    right revise any that do not hold. Claims are judged against the same two thresholds
+    as the policy gate."""
+
     @model_validator(mode="after")
     def _permit_thresholds_are_ordered(self) -> Self:
         if self.permit_no_threshold >= self.permit_yes_threshold:
@@ -89,6 +94,7 @@ class Settings(BaseSettings):
     harness_permit_no_threshold: float = 0.3
     harness_max_steps: int = 6
     harness_policy: str = ""
+    harness_check_answers: bool = True
 
     _dotenv_files: tuple[Path, ...] = PrivateAttr(default=())
 
@@ -123,4 +129,5 @@ class Settings(BaseSettings):
             permit_no_threshold=self.harness_permit_no_threshold,
             max_steps=self.harness_max_steps,
             policy=self.harness_policy,
+            check_answers=self.harness_check_answers,
         )

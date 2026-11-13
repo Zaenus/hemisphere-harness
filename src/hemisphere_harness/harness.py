@@ -16,17 +16,21 @@ replaces it, and reintegration is the only write to the world state's situation.
 
 from collections.abc import Awaitable, Callable
 from types import TracebackType
-from typing import Self
+from typing import Any, Self
 
 from .config import HarnessConfig
-from .errors import LeftHemisphereError
+from .errors import LeftHemisphereError, RightHemisphereError
 from .left.base import LeftHemisphere
 from .right.base import RightHemisphere
 from .schemas import (
     ActionResult,
+    AnswerCheck,
     Authority,
     ChoiceAnswer,
     ChoiceQuestion,
+    Claim,
+    ClaimCheck,
+    ClaimVerdict,
     Decision,
     Evaluation,
     Hemisphere,
@@ -51,12 +55,35 @@ Actuator = Callable[[Option, WorldState], Awaitable[str]]
 
 SELECT = "select"
 PERMIT = "permit:"
+CLAIM = "claim:"
 
-REPORT_PROMPT = (
-    "The run has ended with status '{status}'. Write a short report for the person who set "
-    "this goal: what was done, where things stand, and anything that needs their attention. "
-    "If a decision is waiting on them, say what it is and what you recommend. Plain prose."
-)
+ANSWER_PROMPT = """\
+Now reply to the person who made this request. This reply is all they will see.
+
+- Answer the request itself. For a question, give the answer. For a task, say what is \
+now done and what came of it.
+- Speak as one agent, in the first person. Everything settled along the way, including \
+the quick judgements on routine choices, is now your own view. Never mention \
+hemispheres, a left or right side, a harness, steps, gates, probabilities, option ids, \
+or how the work was organised.
+- Start with the substance. Do not narrate the process: no "the inquiry has been \
+completed", no "the agent delivered".
+- Where you are unsure or the evidence is mixed, say so plainly as part of the answer.
+- Write as in a conversation, in the language of the request. Short paragraphs; lists or \
+headings only where they make the answer clearer.{ending}"""
+
+_ENDINGS = {
+    RunStatus.DONE: "",
+    RunStatus.NEEDS_HUMAN: (
+        "\n- One thing needs their decision before it can happen: {pending}. Nothing has been "
+        "done about it yet. Say what it is, what you recommend and why, and ask for their "
+        "go-ahead."
+    ),
+    RunStatus.MAX_STEPS: (
+        "\n- The work stopped before it was finished. Say what is done, what is still open, "
+        "and that you can carry on if they want."
+    ),
+}
 
 
 async def dry_run(option: Option, state: WorldState) -> str:
@@ -105,7 +132,13 @@ class Harness:
                 status = RunStatus.DONE
                 break
 
-        report = await self.right.generate(REPORT_PROMPT.format(status=status), state)
+        # The run ends where McGilchrist's cycle does: back in the right, which speaks for
+        # the whole. The reply is the agent's settled view, in one voice. Before the person
+        # sees it, the left checks its claims and the right takes back what does not hold.
+        draft = await self.right.generate(answer_prompt(status, state), state)
+        report, check = draft, None
+        if self.config.check_answers:
+            report, check = await self.check_answer(draft, state, trace)
         trace.emit(Actor.RIGHT, "report", report, data={"report": report})
         trace.emit(
             Actor.HARNESS,
@@ -113,7 +146,101 @@ class Harness:
             f"{status.upper()} after {len(state.history)} step(s)",
             data={"status": status, "steps": len(state.history)},
         )
-        return RunResult(status=status, state=state, report=report, trace=trace.events)
+        return RunResult(status=status, state=state, report=report, check=check, trace=trace.events)
+
+    async def check_answer(self, draft: str, state: WorldState, trace: Trace) -> tuple[str, AnswerCheck | None]:
+        """Right lists the draft's claims, left judges each, right revises what does not hold.
+
+        Best-effort: the answer already exists, so a failure anywhere here leaves the draft
+        standing, with the failure recorded, rather than ending the run.
+        """
+        try:
+            claims = await self.right.claims(draft, state)
+        except RightHemisphereError as exc:
+            trace.emit(Actor.RIGHT, "draft", "could not list claims; the answer is unchecked", str(exc))
+            return draft, AnswerCheck(draft=draft, error=str(exc))
+        claims = [claim.model_copy(update={"id": f"c{i}"}) for i, claim in enumerate(claims, 1)]
+        if not claims:
+            return draft, None
+        trace.emit(
+            Actor.RIGHT,
+            "draft",
+            f"drafted the answer; {len(claims)} claim(s) to check",
+            *(f"• {claim.text}" for claim in claims),
+            data={"draft": draft, "claims": [claim.model_dump(mode="json") for claim in claims]},
+        )
+
+        # The left judges each claim with only the request in view, never the right's own
+        # reading, so it cannot simply agree with the draft.
+        try:
+            result = await self.left.decide(self._check_focus(state), self._claim_questions(claims))
+        except LeftHemisphereError as exc:
+            trace.emit(Actor.LEFT, "check", f"unavailable: {exc}", data={"error": str(exc)})
+            return draft, AnswerCheck(draft=draft, error=str(exc))
+
+        checks = []
+        for claim in claims:
+            answer = result.answers[CLAIM + claim.id]
+            assert isinstance(answer, NoulAnswer)  # LeftHemisphere.decide checked it against the question
+            checks.append(
+                ClaimCheck(claim=claim, probability=answer.probability, verdict=self._claim_verdict(answer.probability))
+            )
+        latency = f", {result.latency_ms:.0f} ms" if result.latency_ms is not None else ""
+        weak = [check for check in checks if check.verdict is not ClaimVerdict.HOLDS]
+        trace.emit(
+            Actor.LEFT,
+            "check",
+            f"{len(checks) - len(weak)} of {len(checks)} claim(s) hold  [{result.model or self.left.name}{latency}]",
+            *(f"{check.probability:.2f} {check.verdict}: {check.claim.text}" for check in checks),
+            data={
+                "checks": [check.model_dump(mode="json") for check in checks],
+                "model": result.model or self.left.name,
+                "latency_ms": result.latency_ms,
+                "thresholds": {"holds": self.config.permit_yes_threshold, "doubtful": self.config.permit_no_threshold},
+            },
+        )
+        if not weak:
+            return draft, AnswerCheck(draft=draft, checks=checks)
+
+        try:
+            revised = await self.right.revise(draft, checks, state)
+        except RightHemisphereError as exc:
+            trace.emit(Actor.RIGHT, "revise", "could not revise; the draft stands", str(exc))
+            return draft, AnswerCheck(draft=draft, checks=checks, error=str(exc))
+        doubtful = sum(check.verdict is ClaimVerdict.DOUBTFUL for check in weak)
+        trace.emit(
+            Actor.RIGHT,
+            "revise",
+            f"revised the answer: {doubtful} doubtful, {len(weak) - doubtful} unsure claim(s)",
+            data={"revised": revised},
+        )
+        return revised, AnswerCheck(draft=draft, checks=checks, revised=True)
+
+    def _check_focus(self, state: WorldState) -> dict[str, Any]:
+        view: dict[str, Any] = {"request": state.goal}
+        if state.context:
+            view["context"] = state.context
+        return view
+
+    def _claim_questions(self, claims: list[Claim]) -> dict[str, Question]:
+        return {
+            CLAIM + claim.id: NoulQuestion(
+                instructions=(
+                    "Is this statement accurate? Judge it on the context given and on well-established "
+                    f"general knowledge.\nStatement: {claim.text}"
+                ),
+                yes_when="The statement is accurate, or a fair summary of what is well established.",
+                no_when="The statement is false, exaggerated, out of date, or not supported.",
+            )
+            for claim in claims
+        }
+
+    def _claim_verdict(self, probability: float) -> ClaimVerdict:
+        if probability >= self.config.permit_yes_threshold:
+            return ClaimVerdict.HOLDS
+        if probability <= self.config.permit_no_threshold:
+            return ClaimVerdict.DOUBTFUL
+        return ClaimVerdict.UNSURE
 
     async def step(self, state: WorldState, trace: Trace | None = None) -> StepRecord:
         """One full cycle. Appends the finished step to `state.history` and returns it."""
@@ -390,6 +517,20 @@ class Harness:
         traceback: TracebackType | None,
     ) -> None:
         await self.aclose()
+
+
+def answer_prompt(status: RunStatus, state: WorldState) -> str:
+    """The instruction for the reply that ends a run, which is all the person sees."""
+    pending = "a decision the work could not settle on its own"
+    if status is RunStatus.NEEDS_HUMAN and state.history:
+        last = state.history[-1]
+        wanted = last.evaluation.option_id if last.evaluation else None
+        option = last.proposal.option(wanted or last.decision.left_choice)
+        if option is not None:
+            pending = option.description
+        else:
+            pending = "a choice between: " + "; ".join(o.description for o in last.proposal.options)
+    return ANSWER_PROMPT.format(ending=_ENDINGS[status].format(pending=pending))
 
 
 def _distribution(probabilities: dict[str, float], *, ranked: bool = True) -> str:

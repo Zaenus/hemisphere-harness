@@ -14,6 +14,7 @@ Each rule below is enforced in one identifiable place.
 | 6 | The operator's policy binds both hemispheres. An option the gate refused needs a human. | `Harness._resolve`. |
 | 7 | Every step ends in the right. Reintegration is the only write to the situation. | The end of `Harness.step`. |
 | 8 | A failing left is survivable. A failing right is fatal. | `Harness.step` catches `LeftHemisphereError` only. |
+| 9 | Before the person sees the answer, the left checks its claims and the right takes back what does not hold. | `Harness.check_answer`. |
 
 Rule 4 depends on the right's own labels. A `Proposal` carries `stakes` and `open_ended`,
 and neither has a default, so the right must say on every step whether left-hemisphere
@@ -64,7 +65,11 @@ cannot commit.
 ```
 
 `Harness.run` wraps this: `right.plan` once at the start, steps until the goal is met, a
-human is needed, or `max_steps` is reached, then `right.generate` for the closing report.
+human is needed, or `max_steps` is reached, then `right.generate` for the reply to the
+person. That reply (`RunResult.report`) is the whole agent speaking: one voice, in the
+first person, answering the request itself. It never describes the hemispheres or the
+steps. If something waits on the person, it says what, recommends, and asks. The
+instruction is `harness.answer_prompt`.
 
 | After the step | The run |
 |---|---|
@@ -89,6 +94,32 @@ one request and cost about the same as one.
 
 The thresholds are the starting points TypeSafe suggests for a noul. A noul has no
 separate confidence value: the probability is the whole answer.
+
+## Checking the answer
+
+The run ends with one more pass through both hemispheres, on the answer itself.
+
+1. The right drafts the reply (`generate`).
+2. The right lists the draft's factual claims (`claims`): at most eight, each a single
+   statement that can be judged on its own. Opinions, advice and statements about what
+   the agent did are left out.
+3. The left judges every claim in one pass, as yes/no questions. It sees only the request
+   and its context, never the right's reading of the situation, so it cannot simply agree
+   with the draft.
+4. Each claim is placed in the policy gate's bands: holds (≥ 0.7), unsure, doubtful
+   (≤ 0.3). If any claim is not in "holds", the right rewrites the reply (`revise`),
+   correcting, removing or qualifying it. The check is evidence and the right may keep a
+   claim it is sure of, as with any left verdict.
+
+`RunResult.check` keeps the draft and every verdict. The check is best-effort, because an
+answer already exists: if listing claims, checking them or revising fails, the draft
+stands and the failure is recorded. It is on by default (`HARNESS_CHECK_ANSWERS`). The
+example and the web UI turn it off when the left is the mock, which answers every yes/no
+question 0.5.
+
+The left judges claims with what it knows. A decision model knows less than a large
+chat model, so treat a "holds" as "not obviously wrong", not as verified. Nothing here
+looks anything up.
 
 ## Types
 
@@ -226,3 +257,7 @@ keeps one right hemisphere responsible for each whole.
 - **A left failure never stops a run.** This includes a bad API key, which shows up in
   the trace on every step.
 - **Stopping for a human ends the run.** There is no callback that waits for an answer.
+- **The person hears one agent.** The two hemispheres are how the work is organised, not
+  who the person talks to. As in McGilchrist's cycle, what the left settled is taken back
+  into the right, and the right speaks for the whole. The trace keeps the division of
+  labour for anyone who wants to inspect it.

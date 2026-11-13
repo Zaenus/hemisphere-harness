@@ -301,8 +301,50 @@ class WorldState(BaseModel):
         return view
 
 
+# --- Checking the answer -------------------------------------------------------------------
+
+
+class ClaimVerdict(StrEnum):
+    HOLDS = "holds"
+    UNSURE = "unsure"
+    DOUBTFUL = "doubtful"
+
+
+class Claim(BaseModel):
+    """One factual statement from a draft answer, phrased to stand on its own."""
+
+    id: str = ""
+    text: str = Field(min_length=1)
+
+
+class ClaimList(BaseModel):
+    """What the right lists from its own draft for the left to check."""
+
+    claims: list[Claim] = Field(default_factory=list)
+
+
+class ClaimCheck(BaseModel):
+    claim: Claim
+    probability: float = Field(ge=0, le=1)
+    """The left's probability that the claim holds."""
+    verdict: ClaimVerdict
+
+
+class AnswerCheck(BaseModel):
+    """How the final answer was checked before the person saw it."""
+
+    draft: str
+    checks: list[ClaimCheck] = Field(default_factory=list)
+    revised: bool = False
+    error: str | None = None
+    """Why the check could not finish, if it could not. The draft then stands."""
+
+
 class RunResult(BaseModel):
     status: RunStatus
     state: WorldState
     report: str = ""
+    """The reply to the person: the agent's answer, in one voice."""
+    check: AnswerCheck | None = None
+    """How that reply was checked. None if checking was off or there was nothing to check."""
     trace: list[TraceEvent] = Field(default_factory=list)

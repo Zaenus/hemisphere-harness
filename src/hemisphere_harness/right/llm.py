@@ -7,7 +7,18 @@ from typing import Any, TypeVar
 from pydantic import BaseModel
 
 from ..errors import RightHemisphereError
-from ..schemas import Decision, Evaluation, Plan, Proposal, Reintegration, StepRecord, WorldState
+from ..schemas import (
+    Claim,
+    ClaimCheck,
+    ClaimList,
+    Decision,
+    Evaluation,
+    Plan,
+    Proposal,
+    Reintegration,
+    StepRecord,
+    WorldState,
+)
 from . import prompts
 from .base import RightHemisphere
 
@@ -58,6 +69,18 @@ class LLMRightHemisphere(RightHemisphere):
         user = prompt if state is None else f"{prompts.render_state(state)}\n\n{prompt}"
         return await self.complete(
             [{"role": "system", "content": prompts.ROLE}, {"role": "user", "content": user}]
+        )
+
+    async def claims(self, answer: str, state: WorldState) -> list[Claim]:
+        listed = await self._structured(ClaimList, prompts.claims_prompt(state, answer))
+        return listed.claims[: prompts.MAX_CLAIMS]
+
+    async def revise(self, answer: str, checks: list[ClaimCheck], state: WorldState) -> str:
+        return await self.complete(
+            [
+                {"role": "system", "content": prompts.ROLE},
+                {"role": "user", "content": prompts.revise_prompt(state, answer, checks)},
+            ]
         )
 
     async def _structured(self, schema: type[T], user: str) -> T:
