@@ -167,3 +167,52 @@ async def test_the_web_lists_and_forgets_notes(clean_env, tmp_path):
         assert (await http.delete("/api/memory/nope", headers=AUTH)).status_code == 404
         await http.delete("/api/memory", headers=AUTH)
         assert (await http.get("/api/memory", headers=AUTH)).json()["notes"] == []
+
+
+# --- Checking the answer against remembered preferences ------------------------------------
+
+
+async def test_an_answer_that_ignores_a_remembered_preference_is_rewritten(tmp_path):
+    from hemisphere_harness.memory import Memo
+
+    store = MemoryStore(tmp_path / "memory.json")
+    store.add([Memo(text="Prefers short answers in plain words.", kind="preference")])
+    left = MockLeftHemisphere(script=[SURE, {"style:0": NoulAnswer(probability=0.04)}])
+    right = one_step_right()
+    right._revision = "Short version."
+    result = await Harness(right, left, memory=store).run("What is proof of stake?")
+
+    assert result.report == "Short version."
+    assert right.revised_for == ["Prefers short answers in plain words."]
+    question = left.calls[-1][1]["style:0"]
+    assert "Here is the summary, in three bullets." in question.instructions and "(7 words, 1 lines)" in question.instructions
+    assert result.check.preferences[0].followed is False and result.check.revised
+    style = next(e for e in result.trace if e.phase == "style")
+    assert "follows 0 of 1 preference(s)" in style.summary
+    revise = next(e for e in result.trace if e.phase == "revise")
+    assert revise.summary == "revised the answer: 1 preference(s) not followed"
+
+
+async def test_only_a_clear_miss_counts(tmp_path):
+    from hemisphere_harness.memory import Memo
+
+    store = MemoryStore(tmp_path / "memory.json")
+    store.add([Memo(text="Prefers short answers.", kind="preference"), Memo(text="Uses Django.", kind="fact")])
+    left = MockLeftHemisphere(script=[{"recall:" + store.notes[1].id: NoulAnswer(probability=0.9)}, SURE, {"style:0": NoulAnswer(probability=0.45)}])
+    right = one_step_right()
+    result = await Harness(right, left, memory=store).run("What is proof of stake?")
+
+    assert "revise" not in right.calls
+    assert result.check.preferences[0].followed
+    assert set(left.calls[-1][1]) == {"style:0"}  # facts are not preferences: nothing to check them against
+
+
+def test_the_revision_is_told_which_preferences_were_missed():
+    from hemisphere_harness import WorldState
+    from hemisphere_harness.right.prompts import revise_prompt
+
+    plain = revise_prompt(WorldState(goal="g"), "draft", [])
+    assert "HOW THIS PERSON ASKED" not in plain and "Keep the same voice and format" in plain
+    prompt = revise_prompt(WorldState(goal="g"), "draft", [], ["Prefers short answers."])
+    assert "HOW THIS PERSON ASKED TO BE ANSWERED" in prompt and "- Prefers short answers." in prompt
+    assert "Change the form wherever their preferences above require it." in prompt

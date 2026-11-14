@@ -6,6 +6,7 @@ type it asks for.
 """
 
 import json
+from collections.abc import Sequence
 
 from pydantic import BaseModel
 
@@ -171,7 +172,7 @@ def reintegrate_prompt(state: WorldState, step: StepRecord) -> str:
             lines.append(f"A human signed off '{decision.option_id}', and it was carried out.")
         else:
             lines.append(f"The {decision.committed_by} hemisphere committed to '{decision.option_id}'.")
-        lines.append(f"The action {result}: {step.action.output}")
+        lines.append(f"The action {result}: {step.action.shown()}")
     else:
         lines.append(f"Nothing was done. Outcome: {decision.outcome}.")
     if step.evaluation is not None:
@@ -223,7 +224,20 @@ def claims_prompt(state: WorldState, answer: str) -> str:
     )
 
 
-def revise_prompt(state: WorldState, answer: str, checks: list[ClaimCheck]) -> str:
+def revise_prompt(state: WorldState, answer: str, checks: list[ClaimCheck], preferences: Sequence[str] = ()) -> str:
+    form = (
+        "Keep the same voice: one agent, first person, answering the person directly. Change "
+        "the form wherever their preferences above require it."
+        if preferences
+        else "Keep the same voice and format: one agent, first person, answering the person directly."
+    )
+    preferred = (
+        ["HOW THIS PERSON ASKED TO BE ANSWERED\nThe draft clearly does not follow these, which "
+         "they told you before. Follow them; they matter as much as the facts.\n"
+         + "\n".join(f"- {p}" for p in preferences)]
+        if preferences
+        else []
+    )  # fmt: skip
     lines = []
     for check in checks:
         lines.append(f"- [{check.verdict} {check.probability:.2f}] {check.claim.text}")
@@ -233,9 +247,10 @@ def revise_prompt(state: WorldState, answer: str, checks: list[ClaimCheck]) -> s
         [
             _request(state),
             f"YOUR DRAFT REPLY\n{answer}",
+            *preferred,
             "INDEPENDENT CHECK OF ITS CLAIMS\n"
             "Each claim was judged on its own, with only the request, its context and what the "
-            "tools returned, and given a probability that it holds.\n" + "\n".join(lines),
+            "tools returned, and given a probability that it holds.\n" + ("\n".join(lines) or "(no claims to check)"),
             "TASK\nRewrite the reply in the light of this check. Correct a doubtful claim if you "
             "know the right fact; otherwise remove it, or say plainly that it is uncertain. Qualify "
             "an unsure claim. Keep claims that hold. The check is evidence, not the last word: if "
@@ -244,8 +259,8 @@ def revise_prompt(state: WorldState, answer: str, checks: list[ClaimCheck]) -> s
             "sources. Nothing will check them. Prefer a vaguer true statement to a precise one you "
             "are unsure of. The one exception is evidence listed above: you may use what it says, "
             "and name where it comes from.\n"
-            "Keep the same voice and format: one agent, first person, answering the person "
-            "directly. Do not mention the check, the claims, or any probabilities. Reply with the "
+            + form
+            + " Do not mention the check, the claims, or any probabilities. Reply with the "
             "revised reply only.",
         ]
     )
@@ -318,6 +333,12 @@ def render_state(state: WorldState) -> str:
     sections.append(("GOAL (the person's latest message)" if state.conversation else "GOAL", state.goal))
     if state.context:
         sections.append(("CONTEXT", state.context))
+    if state.policy:
+        sections.append((
+            "OPERATOR POLICY (binds you as well)",
+            f"{state.policy}\nAn action this policy reserves for a person needs their sign-off: "
+            "ask for it instead of committing it. The harness enforces this either way.",
+        ))  # fmt: skip
     if state.situation:
         sections.append(("SITUATION (your current reading)", state.situation))
     if state.plan:

@@ -1,0 +1,44 @@
+site_name: Hemisphere Harness
+site_description: An agent harness after McGilchrist's Master and Emissary, where a generative model holds the whole picture and a decision model handles the routine.
+site_url: https://zaenus.github.io/hemisphere-harness/
+repo_url: https://github.com/Zaenus/hemisphere-harness
+repo_name: Zaenus/hemisphere-harness
+edit_uri: edit/main/docs/
+copyright: MIT licensed
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+    - search.highlight
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: deep purple
+      accent: teal
+      toggle: { icon: material/weather-night, name: Dark mode }
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: deep purple
+      accent: teal
+      toggle: { icon: material/weather-sunny, name: Light mode }
+
+nav:
+  - Home: index.md
+  - Architecture: architecture.md
+  - Providers: providers.md
+  - Evaluation: evaluation.md
+  - Contributing: contributing.md
+
+markdown_extensions:
+  - admonition
+  - tables
+  - toc: { permalink: true }
+  - pymdownx.highlight
+  - pymdownx.superfences
+  - pymdownx.snippets: { check_paths: true }
+
+exclude_docs: |
+  images/demo.gif

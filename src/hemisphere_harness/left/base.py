@@ -1,6 +1,7 @@
 """The Emissary's contract."""
 
 import time
+from .. import usage
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from typing import Any
@@ -32,7 +33,10 @@ class LeftHemisphere(ABC):
         the question (a missing answer, the wrong type, a choice that was never offered).
         """
         started = time.perf_counter()
-        result = await self._decide(state, questions)
+        try:
+            result = await self._decide(state, questions)
+        finally:
+            usage.record("left", seconds=time.perf_counter() - started)
         validate_answers(questions, result.answers)
         if result.latency_ms is None:
             result.latency_ms = (time.perf_counter() - started) * 1000

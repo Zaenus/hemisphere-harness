@@ -17,10 +17,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, Self
 
+import httpx
 from pydantic import BaseModel, Field, model_validator
 
 from ..config import HarnessConfig, Settings
 from ..errors import ConfigError, HarnessError
+from ..evals.signoffs import record_signoff, scenario_from_signoff
 from ..examples.simple_loop import LOCKOUT, REFUND, Ticket
 from ..harness import Harness
 from ..left import ExperimentalLLMLeft, LeftHemisphere, MockLeftHemisphere
@@ -45,6 +47,7 @@ from ..schemas import (
 from ..lookup import Searcher, searcher_from_settings
 from ..mcp_tools import MCPToolbox, toolbox_from_settings
 from ..memory import MemoryStore
+from ..notify import notify, should_notify
 from ..trace import Actor, TraceEvent
 
 log = logging.getLogger(__name__)
@@ -75,6 +78,8 @@ class ResumeRequest(BaseModel):
     approve: bool
     option_id: str | None = None
     note: str = Field(default="", max_length=5_000)
+    alone_next_time: bool = False
+    """The person's view that this did not need their sign-off. Kept with the sign-off."""
 
 
 class Run(BaseModel):
@@ -219,10 +224,20 @@ def _new_id() -> str:
 
 
 class RunManager:
-    def __init__(self, store: RunStore, settings: Callable[[], Settings], *, demo_pace_s: float = 0.0) -> None:
+    def __init__(
+        self,
+        store: RunStore,
+        settings: Callable[[], Settings],
+        *,
+        demo_pace_s: float = 0.0,
+        base_url: str = "http://127.0.0.1:8765/",
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
         self.store = store
         self._settings = settings
         self._pace = demo_pace_s
+        self._base_url = base_url
+        self._transport = transport
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._listeners: dict[str, list[asyncio.Queue[tuple[int | None, TraceEvent] | None]]] = {}
 
@@ -327,7 +342,12 @@ class RunManager:
         option = next((o for o in options if o.id == request.option_id), None)
         if request.approve and option is None:
             raise ConfigError(f"'{request.option_id}' is not one of: {', '.join(o.id for o in options)}")
-        decision = HumanDecision(approve=request.approve, option_id=request.option_id if request.approve else None, note=request.note)
+        decision = HumanDecision(
+            approve=request.approve, option_id=request.option_id if request.approve else None, note=request.note,
+            alone_next_time=request.approve and request.alone_next_time,
+        )  # fmt: skip
+        if not stopped.demo:
+            self._keep_signoff(stopped, decision)
         said = f"Approved: {option.description}" if option is not None and request.approve else "Rejected those options"
         if decision.note.strip():
             said += f" — {decision.note.strip()}"
@@ -359,6 +379,21 @@ class RunManager:
         searcher = None if run.offline else searcher_from_settings(settings)
         memory = self._memory_for_run(settings, run.offline)
         return self._launch(run, right, left, config, outcomes, lambda harness: harness.resume(state, decision), tools, searcher, memory)
+
+    @property
+    def signoffs_file(self) -> Path:
+        return self.store.directory.parent / "signoffs.json"
+
+    def _keep_signoff(self, stopped: Run, decision: HumanDecision) -> None:
+        """Keep an approval as an evaluation scenario. Best-effort: never blocks the sign-off."""
+        assert stopped.state is not None
+        made = scenario_from_signoff(stopped.state, decision, policy=stopped.config.policy, run_id=stopped.id, events=stopped.events)
+        if made is None:
+            return
+        try:
+            record_signoff(self.signoffs_file, made[0], made[1], stopped.config.policy)
+        except (OSError, ValueError):
+            pass
 
     def _ensure_idle(self, conversation: list[Run]) -> None:
         if any(self.is_running(run.id) for run in conversation):
@@ -481,6 +516,14 @@ class RunManager:
                 await searcher.aclose()
         for key, value in outcome.items():
             setattr(run, key, value)
+        await self._notify(run)
+
+    async def _notify(self, run: Run) -> None:
+        settings = self._settings()
+        if not settings.harness_notify_url or not should_notify(settings.harness_notify_on, run.status):
+            return
+        link = f"{self._base_url}#/c/{run.conversation_id}"
+        await notify(settings.harness_notify_url, run_id=run.id, status=run.status, goal=run.goal, link=link, transport=self._transport)
 
     def _finish(self, run: Run, right: RightHemisphere, left: LeftHemisphere) -> None:
         if run.status == "running":  # stopped before the harness started, so nothing closed them

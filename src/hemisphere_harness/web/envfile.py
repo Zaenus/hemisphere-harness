@@ -55,6 +55,8 @@ FIELDS: tuple[Field, ...] = (
     Field("ANTHROPIC_API_KEY", "Anthropic API key", "secret"),
     Field("GEMINI_API_KEY", "Gemini API key", "secret"),
     Field("RIGHT_EFFORT", "Effort", "choice", choices=("", "low", "medium", "high", "xhigh", "max"), help="For Claude: how hard the model works. Higher is slower and costs more; empty uses the model's default."),
+    Field("RIGHT_PRICE_INPUT", "Price per million input tokens ($)", "number", help="Optional. Shows what each run cost."),
+    Field("RIGHT_PRICE_OUTPUT", "Price per million output tokens ($)", "number", help="Optional. Shows what each run cost."),
     # Left hemisphere.
     Field("LEFT_PROVIDER", "Provider", "provider"),
     Field("LEFT_MODEL", "Model", help="For Ollama, a decision model: ollama show <model> lists \"decision\" under Capabilities."),
@@ -79,6 +81,9 @@ FIELDS: tuple[Field, ...] = (
     Field("HARNESS_MEMORY", "Remember across conversations", "bool", help="The right keeps short notes worth remembering; the left recalls the ones that bear on each new request. Stored only on this machine."),
     Field("HARNESS_MEMORY_FILE", "Memory file", help="Where the notes are kept. Default: memory.json next to the run history."),
     Field("HARNESS_MCP_CONFIG", "MCP servers file", help="A JSON file in the usual mcpServers format. Its tools become available to runs. Edit the file itself to add servers."),
+    Field("HARNESS_SCREEN_TOOL_OUTPUT", "Read tool output before the agent does", "bool", help="The left reads everything a tool or a search returns. Tool output that tries to instruct the agent reaches the right only marked as untrusted; such search results are dropped."),
+    Field("HARNESS_NOTIFY_URL", "Webhook", "secret", help="Slack, Discord, Mattermost or any URL that takes a JSON POST. Gets one line with the start of the request and a link."),
+    Field("HARNESS_NOTIFY_ON", "Notify when", "choice", choices=("signoff", "all"), help="signoff: a run waits for you. all: also when a run finishes or fails."),
     Field("HARNESS_CHECK_ANSWERS", "Check answers before showing them", "bool", help="The left judges each factual claim in the answer; the right revises those that do not hold. Off when the left is the mock."),
 )  # fmt: skip
 

@@ -231,3 +231,24 @@ async def test_malformed_answers_raise(answers, problem):
 async def test_non_json_body_raises():
     with pytest.raises(LeftHemisphereError, match="not JSON"):
         await jev(lambda request: httpx.Response(200, text="<html>gateway</html>")).decide("state", QUESTIONS)
+
+
+async def test_a_rate_limit_backs_off_for_seconds(monkeypatch):
+    import hemisphere_harness._http as http
+
+    waits = []
+
+    async def sleep(seconds):
+        waits.append(seconds)
+
+    monkeypatch.setattr(http, "RATE_LIMIT_BACKOFF_S", 5.0)
+    monkeypatch.setattr(http.asyncio, "sleep", sleep)
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        return httpx.Response(429, json={"detail": "slow down"}) if attempts < 3 else ok()
+
+    await jev(handler, max_retries=2).decide("state", QUESTIONS)
+    assert 5.0 <= waits[0] <= 6.25 and 10.0 <= waits[1] <= 12.5

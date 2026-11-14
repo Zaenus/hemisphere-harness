@@ -30,6 +30,7 @@ async def post_json(
     problem = "no attempt made"
     for attempt in range(max_retries + 1):
         retry_after: float | None = None
+        limited = False
         try:
             response = await client.post(path, json=payload)
         except httpx.TransportError as exc:
@@ -42,12 +43,19 @@ async def post_json(
                 hint = " (check the API key)" if response.status_code in (401, 403) else ""
                 raise error(f"{service} rejected the request{hint}: {problem}")
             retry_after = _retry_after(response)
+            limited = response.status_code == 429
 
         if attempt < max_retries:
-            delay = backoff_s * 2**attempt * (1 + random.random() / 4)
+            # A rate limit lifts in seconds, not milliseconds: back off from RATE_LIMIT_BACKOFF_S.
+            base = max(backoff_s, RATE_LIMIT_BACKOFF_S) if limited else backoff_s
+            delay = base * 2**attempt * (1 + random.random() / 4)
             await asyncio.sleep(delay if retry_after is None else retry_after)
 
     raise error(f"{service} unavailable after {max_retries + 1} attempts: {problem}")
+
+
+RATE_LIMIT_BACKOFF_S = 5.0
+"""The first wait after a 429 without a Retry-After header; it doubles on each retry."""
 
 
 def _retryable(status: int) -> bool:

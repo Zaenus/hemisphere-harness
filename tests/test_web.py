@@ -598,4 +598,48 @@ async def test_a_live_run_calls_a_real_tool(clean_env, tmp_path, monkeypatch):
     assert run["events"][0]["phase"] == "tools"
     assert "shop.lookup_order" in run["tools"]
     act = next(event for event in run["events"] if event["phase"] == "act")
-    assert act["data"]["action"] == {"option_id": "look", "ok": True, "output": "order A1: 2 items, shipped", "tool": "shop.lookup_order"}
+    assert act["data"]["action"] == {"option_id": "look", "ok": True, "output": "order A1: 2 items, shipped", "tool": "shop.lookup_order", "screen": None}
+
+
+# --- Notifications ----------------------------------------------------------------------------
+
+
+async def test_a_run_that_waits_for_a_sign_off_calls_the_webhook(clean_env, tmp_path, monkeypatch):
+    posted = []
+
+    def handler(request):
+        posted.append((str(request.url), json.loads(request.content)))
+        return httpx.Response(200)
+
+    monkeypatch.setenv("HARNESS_NOTIFY_URL", "https://hooks.example/abc")
+    async with client(make_app(tmp_path, transport=httpx.MockTransport(handler))) as http:
+        stopped = await wait_for_end(http, (await http.post("/api/runs", headers=AUTH, json={"demo": "refund"})).json()["id"])
+        assert stopped["status"] == "needs_human"
+        done = await wait_for_end(http, (await http.post("/api/runs", headers=AUTH, json={"demo": "lockout"})).json()["id"])
+        assert done["status"] == "done"
+
+    assert len(posted) == 1  # only the sign-off, by default
+    url, body = posted[0]
+    assert url == "https://hooks.example/abc"
+    assert body["event"] == "needs_human" and body["run_id"] == stopped["id"]
+    assert body["text"] == body["content"] and "is waiting for your sign-off" in body["text"]
+    assert body["link"] == f"http://127.0.0.1:8765/#/c/{stopped['conversation_id']}"
+
+
+async def test_a_webhook_that_is_down_does_not_break_the_run(clean_env, tmp_path, monkeypatch):
+    def handler(request):
+        raise httpx.ConnectError("down")
+
+    monkeypatch.setenv("HARNESS_NOTIFY_URL", "https://hooks.example/abc")
+    monkeypatch.setenv("HARNESS_NOTIFY_ON", "all")
+    async with client(make_app(tmp_path, transport=httpx.MockTransport(handler))) as http:
+        run = await wait_for_end(http, (await http.post("/api/runs", headers=AUTH, json={"demo": "lockout"})).json()["id"])
+    assert run["status"] == "done"
+
+
+def test_notify_on_all_includes_finished_runs():
+    from hemisphere_harness.notify import message, should_notify
+
+    assert should_notify("signoff", "needs_human") and not should_notify("signoff", "done")
+    assert should_notify("all", "done") and should_notify("all", "failed") and not should_notify("all", "running")
+    assert message("done", "x" * 300, "L").count("x") == 119

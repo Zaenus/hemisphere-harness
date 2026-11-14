@@ -29,12 +29,12 @@ offline example on Python 3.11 to 3.14 for every pull request, so run them local
 A change to a left-hemisphere provider, to the questions the harness asks it, or to the
 gate's thresholds should come with numbers. Run `hemisphere-harness eval` before and after,
 with the left you changed, and put both reports in the pull request.
-[docs/evaluation.md](docs/evaluation.md) explains the report and how to add scenarios.
+[docs/evaluation.md](https://github.com/Zaenus/hemisphere-harness/blob/main/docs/evaluation.md) explains the report and how to add scenarios.
 
 ## Adding a provider
 
 This is the most useful kind of contribution, and usually the smallest.
-[docs/providers.md](docs/providers.md) has the full guide. In short:
+[docs/providers.md](https://github.com/Zaenus/hemisphere-harness/blob/main/docs/providers.md) has the full guide. In short:
 
 - **An OpenAI-compatible service** is one line in `src/hemisphere_harness/providers.py`,
   one table row, and one test parameter.
@@ -47,7 +47,7 @@ This is the most useful kind of contribution, and usually the smallest.
 
 The project is small on purpose, and its point is a specific relationship between two
 parts. Changes are easy to accept when they keep these true, and need a good argument
-when they do not. [docs/architecture.md](docs/architecture.md) says where each one is
+when they do not. [docs/architecture.md](https://github.com/Zaenus/hemisphere-harness/blob/main/docs/architecture.md) says where each one is
 enforced.
 
 1. Only the right hemisphere generates. The left returns typed answers and nothing else.

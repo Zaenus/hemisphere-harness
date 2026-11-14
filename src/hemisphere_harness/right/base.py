@@ -1,7 +1,7 @@
 """The Master's contract."""
 
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 
 from ..memory import Memo
 from ..schemas import (
@@ -86,10 +86,14 @@ class RightHemisphere(ABC):
         """
         return []
 
-    async def revise(self, answer: str, checks: list[ClaimCheck], state: WorldState) -> str:
+    async def revise(
+        self, answer: str, checks: list[ClaimCheck], state: WorldState, *, preferences: Sequence[str] = ()
+    ) -> str:
         """Rewrite a draft answer in the light of the left's check of its claims.
 
-        The check is evidence, not the last word. The default returns the draft unchanged.
+        `preferences` are the person's remembered preferences that the left found the draft
+        clearly does not follow. The check is evidence, not the last word. The default
+        returns the draft unchanged.
         """
         return answer
 

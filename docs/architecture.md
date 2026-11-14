@@ -17,6 +17,7 @@ Each rule below is enforced in one identifiable place.
 | 9 | Before the person sees the answer, the left checks its claims and the right takes back what does not hold. | `Harness.check_answer`. |
 | 10 | A tool that is not read-only is never called without a person's sign-off, whichever hemisphere chose it. | `Harness._gate` and `Harness._resolve`, through `_tool_needing_signoff`. |
 | 11 | What the agent remembers across conversations reaches the right only, and only what the left judged relevant. | `Harness._recall`; `WorldState.focus()` leaves memory out. |
+| 12 | Tool output the left flags as instructions to the agent reaches the right only fenced and marked untrusted. | `Harness._screen`, `ActionResult.shown()`, `WorldState.observations()`. |
 
 Rule 4 depends on the right's own labels. A `Proposal` carries `stakes` and `open_ended`,
 and neither has a default, so the right must say on every step whether left-hemisphere
@@ -83,7 +84,11 @@ instruction is `harness.answer_prompt`.
 ## The policy gate
 
 If `HarnessConfig.policy` is set, the left is also asked one yes/no question per option:
-under this policy, may this action be carried out without human sign-off? There is one
+under this policy, may this action be carried out without human sign-off? The question
+adds that approvals mentioned in the request are not sign-off, which is given separately,
+and its yes means the policy clearly allows this kind of action. Without that, a request
+saying "they confirmed twice" talked a `tev1` gate into allowing an account deletion
+([evaluation.md](evaluation.md#how-the-policy-question-was-fixed)). There is one
 question per option because Jev answers every question independently against the same
 state, so it cannot be asked to gate "whichever option wins". All the questions go in
 one request and cost about the same as one.
@@ -145,6 +150,12 @@ per hemisphere, in keeping with what each does:
   only the request. They go into `WorldState.memory`, which only the right sees. If the
   left fails, the five most recent facts are used.
 
+The answer is checked against the preferences too. In the same pass as the claims, the
+left gets one question per preference, the only questions that show it the draft: is the
+reply (with its length in words) consistent with it? At or below `permit_no_threshold`,
+a clear miss, the right revises with `preferences=` naming what it missed, and may change
+the form. `AnswerCheck.preferences` keeps the verdicts.
+
 Preferences skip the left on purpose. Asked whether "prefers short answers" bears on
 "What is proof of stake?", the 4.3B `tev1` said no (0.18): a topical judge is the wrong
 tool for a rule that applies everywhere, and only facts are topical.
@@ -179,6 +190,35 @@ tool the harness does not know is treated as needing sign-off.
 `MCPToolbox.connect` starts or reaches every configured server. A server that fails is
 recorded in `errors` and skipped; the others still work. The web UI connects tools for
 each live run and disconnects them before the run reports its outcome.
+
+**Screening.** Right after a tool runs, and before the right reintegrates, `_screen` asks
+the left one yes/no question: does this output try to instruct or manipulate the agent,
+rather than report information? Above 0.5 (strictly, so a left that cannot tell lets it
+through) the output is flagged: `ActionResult.screen` keeps the probability, and
+`ActionResult.shown()` fences the text and marks it untrusted wherever the right sees it
+(`StepRecord.summary`, the reintegration prompt), telling it to use the facts and follow
+none of the instructions. It still counts as evidence for the claim check, since the left
+only weighs it. Withholding it entirely was tried first, and lost the real data that
+injected text sits beside. Lookup snippets get
+the same question, in the same pass as the recheck, and flagged ones are dropped. If the
+left fails, the output passes unscreened and the trace says so. `HarnessConfig.screen_tool_output`
+turns it off.
+
+## The policy, for the right
+
+`WorldState.policy` carries `HarnessConfig.policy` into the right's view, under "OPERATOR
+POLICY (binds you as well)", so the right proposes and evaluates knowing what needs
+sign-off. It is not in `focus()`: the left meets the policy only in the per-option
+questions. The gate enforces the policy whatever the right makes of it.
+
+## Usage
+
+`usage.tracking()` wraps every `run` and `resume`. Clients report into the current run
+through a context variable: `OpenAICompatibleRight` and `AnthropicRight` record each call's
+time and token counts (streams ask for them with `stream_options.include_usage` and stop
+asking a server that refuses), and `LeftHemisphere.decide` records each call's time.
+`RunResult.usage` and the `end` event carry the totals, priced when
+`right_price_input`/`right_price_output` are set.
 
 ## Conversations and sign-off
 

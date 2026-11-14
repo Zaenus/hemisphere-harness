@@ -11,9 +11,11 @@ answer appear as it is written. Thinking is left to the model, which runs adapti
 thinking by default; RIGHT_EFFORT sets how hard it works (low, medium, high, xhigh, max).
 """
 
+import time
 from collections.abc import AsyncIterator
 from typing import Any
 
+from .. import usage
 from ..errors import ConfigError, RightHemisphereError
 from .llm import ChatMessage, LLMRightHemisphere
 
@@ -63,11 +65,19 @@ class AnthropicRight(LLMRightHemisphere):
 
     async def complete_stream(self, messages: list[ChatMessage]) -> AsyncIterator[str]:
         anthropic = self._anthropic
+        started = time.perf_counter()
         try:
             async with self._stream(messages) as stream:
                 async for text in stream.text_stream:
                     yield text
                 final = await stream.get_final_message()
+            used = getattr(final, "usage", None)
+            usage.record(
+                "right",
+                seconds=time.perf_counter() - started,
+                input_tokens=sum(getattr(used, k, None) or 0 for k in ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")),
+                output_tokens=getattr(used, "output_tokens", None),
+            )
         except anthropic.APIConnectionError as exc:
             raise RightHemisphereError(f"Claude ({self.model}) could not be reached: {type(exc).__name__}") from exc
         except anthropic.APIStatusError as exc:

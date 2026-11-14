@@ -359,6 +359,23 @@ function showComposer(prefill = null) {
   if (rightReady) goal.focus();
 }
 
+// What the run cost, from its end event: tokens and money for the right, time for both.
+function usageChip(run) {
+  const end = run.events.find((event) => event.phase === "end");
+  const u = end && end.data && end.data.usage;
+  if (!u) return null;
+  const tokens = u.right.input_tokens + u.right.output_tokens;
+  const k = (n) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
+  const money = u.cost == null ? null : u.cost < 0.01 ? `$${u.cost.toFixed(4)}` : `$${u.cost.toFixed(2)}`;
+  const label = [tokens ? `${k(tokens)} tokens` : null, money, `${Math.round(u.seconds)} s`].filter(Boolean).join(" · ");
+  const title = [
+    `Right: ${u.right.calls} call(s), ${k(u.right.input_tokens)} in, ${k(u.right.output_tokens)} out, ${u.right.seconds.toFixed(1)} s waiting`,
+    `Left: ${u.left.calls} call(s), ${u.left.seconds.toFixed(1)} s waiting`,
+    u.cost == null ? "Set RIGHT_PRICE_INPUT and RIGHT_PRICE_OUTPUT (dollars per million tokens) to see the cost." : null,
+  ].filter(Boolean).join("\n");
+  return h("span", { class: "chip", title }, label);
+}
+
 // Starting points beyond support tickets. They fill the composer; nothing runs until you start it.
 const EXAMPLES = [
   { label: "A research question", goal: "Is it true that Bitcoin is a decentralized currency?", context: "" },
@@ -407,6 +424,8 @@ const PHASES = {
   recall: "Recalls",
   remember: "Remembers",
   lookup: "Looks claims up",
+  screen: "Reads the tool's output first",
+  style: "Checks the answer's form",
   approve: "Sign off",
   reject: "Reject",
   report: "Report",
@@ -715,6 +734,7 @@ class RunView {
       h("span", { class: "chip right", title: "Right hemisphere" }, run.right),
       h("span", { class: "chip left", title: "Left hemisphere" }, run.left),
       run.left_experimental ? h("span", { class: "chip warn" }, "experimental left") : null,
+      usageChip(run),
       h("span", { class: "spacer" }),
       report && !running ? h("button", { class: "btn small ghost", type: "button", onclick: () => this.copy(report) }, "Copy") : null,
       running ? h("button", { class: "btn small danger", type: "button", onclick: () => this.stop() }, icon("stop"), "Stop") : null,
@@ -764,6 +784,7 @@ class RunView {
     });
     source.addEventListener("end", (message) => {
       Object.assign(this.run, JSON.parse(message.data));
+      notifyBrowser(this.run);
       source.close();
       if (state.source === source) state.source = null;
       this.refresh();
@@ -1012,6 +1033,10 @@ function nextActivity(run) {
       return ["right", `The right is reintegrating step ${step}…`];
     }
     case "act":
+      return last.data.action && last.data.action.tool
+        ? ["left", "The left is reading what the tool returned…"]
+        : ["right", `The right is reintegrating step ${step}…`];
+    case "screen":
       return ["right", `The right is reintegrating step ${step}…`];
     case "reintegrate": {
       const gate = [...events].reverse().find((e) => e.phase === "gate" && e.step === step);
@@ -1026,13 +1051,18 @@ function nextActivity(run) {
       return ["right", "The right is taking your rejection into account…"];
     case "draft": {
       const n = (last.data.claims || []).length;
-      return n ? ["left", `The left is checking ${n} claim${n === 1 ? "" : "s"} in the answer…`] : ["harness", "Finishing…"];
+      if (n) return ["left", `The left is checking ${n} claim${n === 1 ? "" : "s"} in the answer…`];
+      return (last.data.preferences || []).length ? ["left", "The left is checking the answer against your preferences…"] : ["harness", "Finishing…"];
     }
     case "lookup":
       return ["left", "The left is judging those claims again, with what was found…"];
     case "check": {
       const weak = (last.data.checks || []).filter((c) => c.verdict !== "holds").length;
       return weak ? ["right", `The right is revising ${weak} claim${weak === 1 ? "" : "s"} that did not hold…`] : ["harness", "Finishing…"];
+    }
+    case "style": {
+      const missed = (last.data.preferences || []).filter((c) => !c.followed).length;
+      return missed ? ["right", "The right is rewriting the answer the way you like it…"] : ["harness", "Finishing…"];
     }
     default:
       return ["harness", "Finishing…"];
@@ -1216,6 +1246,24 @@ function renderEvent(event, run) {
         results.map((r) => h("div", { class: "sub" }, r.claim.text, " → ",
           r.sources.length ? r.sources.map((s) => s.title).join(", ") : "nothing found")));
     }
+    case "style": {
+      const prefs = d.preferences || [];
+      return card(null,
+        h("div", { class: "text" }, "Whether the answer follows how you asked to be answered:"),
+        prefs.map((c) => h("div", { class: "claim" },
+          h("div", { class: "text" }, c.preference),
+          h("div", { class: "claim-bar" }, h("span", { class: "val" }, fmt(c.probability)),
+            h("span", { class: `chip ${c.followed ? "ok" : "danger"}` }, c.followed ? "followed" : "not followed")))));
+    }
+    case "screen": {
+      if (d.error) return card(null, h("div", { class: "text" }, "Could not read the output first: the hemispheres see it unscreened."), h("div", { class: "sub" }, d.error));
+      if (Array.isArray(d.flagged)) return card(null, h("div", { class: "notice danger" }, icon("alert"), h("div", { class: "grow" }, event.summary)));
+      return d.flagged
+        ? card(d.tool, h("div", { class: "notice danger" }, icon("alert"), h("div", { class: "grow" },
+            h("strong", {}, "This output addresses the agent instead of reporting information."),
+            h("div", {}, `The left judged it ${fmt(d.probability)} likely to be instructions. The right sees it only fenced off and marked untrusted: it may use the facts, not follow the instructions. The policy gate still applies to anything it does next.`))))
+        : card(d.tool, h("div", { class: "text" }, `Information only (p=${fmt(d.probability)} that it addresses the agent).`));
+    }
     case "revise":
       return card(null, h("div", { class: "text" }, event.summary.replace(/^revised the answer/, "Revised the answer")),
         event.details.map((line) => h("div", { class: "sub" }, line)));
@@ -1270,12 +1318,13 @@ function signOff(run, conversation) {
   const recommended = evaluation && evaluation.data.evaluation ? evaluation.data.evaluation.option_id : null;
   const options = propose && propose.data.proposal ? propose.data.proposal.options : [];
   const note = h("input", { class: "input", type: "text", placeholder: "Add a note for the agent (optional)", "aria-label": "Note" });
+  const alone = h("input", { type: "checkbox" });
   const buttons = [];
 
   const decide = async (body) => {
     buttons.forEach((b) => { b.disabled = true; });
     try {
-      await conversation.resume(run, { ...body, note: note.value });
+      await conversation.resume(run, { ...body, note: note.value, alone_next_time: body.approve && alone.checked });
     } catch (error) {
       if (error.status !== 401) toast(error.message, "error");
       buttons.forEach((b) => { b.disabled = false; });
@@ -1301,6 +1350,8 @@ function signOff(run, conversation) {
         button("Approve", "tag", { approve: true, option_id: o.id }));
     }),
     note,
+    run.demo ? null : h("label", { class: "check", title: "Each approval is kept as a test case for the left hemisphere: hemisphere-harness eval --signoffs" },
+      alone, " What I approve could have been done without asking me"),
     h("div", { class: "row" },
       button("Reject all", "", { approve: false }),
       h("span", { class: "faint" }, "Approving carries out that action and the agent carries on from there. Rejecting sends it back to find another way.")));
@@ -1612,11 +1663,11 @@ function boolField(name) {
     f.help ? h("span", { class: "field-help" }, f.help) : null);
 }
 
-function secretField(name, label) {
+function secretField(name, label, empty = "Enter your API key") {
   const f = fieldInfo(name);
   const locked = f.source === "environment";
   const removing = settings.draft[name] === null;
-  const placeholder = locked ? "Set in your shell" : removing ? "Will be removed when you save" : f.set ? "Saved. Leave blank to keep it." : "Enter your API key";
+  const placeholder = locked ? "Set in your shell" : removing ? "Will be removed when you save" : f.set ? "Saved. Leave blank to keep it." : empty;
   const input = h("input", {
     class: "input", id: `f-${name}`, type: "password", autocomplete: "off", spellcheck: "false",
     placeholder, disabled: locked, value: typeof settings.draft[name] === "string" ? settings.draft[name] : "",
@@ -1803,6 +1854,9 @@ function rightSection() {
             h("div", { class: "form-grid" },
               textField("RIGHT_TIMEOUT_S", { type: "number" }),
               textField("RIGHT_TEMPERATURE", { type: "number", placeholder: "unset" })),
+            h("div", { class: "form-grid" },
+              textField("RIGHT_PRICE_INPUT", { type: "number", placeholder: "unset" }),
+              textField("RIGHT_PRICE_OUTPUT", { type: "number", placeholder: "unset" })),
             boolField("RIGHT_JSON_MODE"))))));
 }
 
@@ -1873,7 +1927,49 @@ function loopSection() {
       h("div", { class: "form-grid" },
         textField("HARNESS_COMMIT_THRESHOLD", { type: "number" }),
         textField("HARNESS_MAX_STEPS", { type: "number" })),
-      answerCheckCard()));
+      answerCheckCard(),
+      h("div", { class: "card stack" },
+        h("div", { class: "field-label" }, "Tools and searches"),
+        boolField("HARNESS_SCREEN_TOOL_OUTPUT")),
+      notifyCard()));
+}
+
+// Browser notifications are this browser's choice, kept in localStorage; the webhook is the server's.
+function notifyCard() {
+  const supported = "Notification" in window;
+  const on = supported && Notification.permission === "granted" && browserNotify();
+  const toggle = h("button", {
+    class: "btn small", type: "button", disabled: !supported || Notification.permission === "denied",
+    onclick: async () => {
+      if (on) { setBrowserNotify(false); renderSettings(); return; }
+      const answer = await Notification.requestPermission();
+      setBrowserNotify(answer === "granted");
+      renderSettings();
+    },
+  }, on ? "Turn off in this browser" : "Notify me in this browser");
+  return h("div", { class: "card stack" },
+    h("div", { class: "field-label" }, "Notifications"),
+    h("div", { class: "row" }, toggle, h("span", { class: "faint" },
+      !supported ? "This browser has no notifications." : Notification.permission === "denied" ? "Blocked in this browser's site settings." :
+        "When a run waits for your sign-off while this tab is in the background.")),
+    secretField("HARNESS_NOTIFY_URL", undefined, "https://hooks.slack.com/services/…"),
+    choiceField("HARNESS_NOTIFY_ON", { signoff: "A run waits for my sign-off", all: "Also when a run finishes or fails" }));
+}
+
+function browserNotify() {
+  try { return localStorage.getItem("hh-notify") === "on"; } catch { return false; }
+}
+
+function setBrowserNotify(on) {
+  try { localStorage.setItem("hh-notify", on ? "on" : "off"); } catch { /* private mode: nothing to keep */ }
+}
+
+function notifyBrowser(run) {
+  if (!("Notification" in window) || Notification.permission !== "granted" || !browserNotify() || !document.hidden) return;
+  if (run.status !== "needs_human") return;
+  const goal = (run.message || run.goal || "").slice(0, 120);
+  const n = new Notification("Waiting for your sign-off", { body: goal, tag: run.id });
+  n.onclick = () => { window.focus(); location.hash = `#/c/${run.conversation_id}`; n.close(); };
 }
 
 const MCP_EXAMPLE = `{

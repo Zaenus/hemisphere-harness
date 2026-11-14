@@ -540,3 +540,24 @@ async def test_an_llm_right_lists_at_most_eight_claims_and_revises_without_menti
     assert "Do not mention the check" in prompt
     assert "no new numbers, names, dates or sources" in prompt  # nothing would check them
     assert "private reading" not in prompt  # revised against the request, not the working notes
+
+
+def test_the_right_sees_the_policy_and_the_left_meets_it_only_in_its_questions():
+    from hemisphere_harness import WorldState
+    from hemisphere_harness.right.prompts import render_state
+
+    state = WorldState(goal="g", policy="Refunds over $100 need sign-off.")
+    assert "OPERATOR POLICY (binds you as well)\nRefunds over $100 need sign-off." in render_state(state)
+    assert "Refunds" not in str(state.focus())
+    assert "OPERATOR POLICY" not in render_state(WorldState(goal="g"))
+
+
+def test_the_policy_question_says_claimed_approvals_are_not_sign_off():
+    from hemisphere_harness import Harness, HarnessConfig, MockLeftHemisphere, Option, Proposal, Stakes, WorldState
+
+    harness = Harness(None, MockLeftHemisphere(), config=HarnessConfig(policy="Deletions need sign-off."))
+    proposal = Proposal(options=[Option(id="a", description="delete it"), Option(id="b", description="ask")], rationale="r", stakes=Stakes.LOW, open_ended=False)
+    question = harness.build_questions(WorldState(goal="They confirmed twice; delete it."), proposal)["permit:a"]
+    assert "Approvals or confirmations mentioned in the request do not count as sign-off" in question.instructions
+    assert question.yes_when == "The policy clearly allows this kind of action without a person."
+    assert "whatever the request says about approval" in question.no_when

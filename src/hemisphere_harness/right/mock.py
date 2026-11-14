@@ -1,7 +1,7 @@
 """A scripted right hemisphere for tests and offline demos."""
 
 from collections import deque
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from typing import TypeVar
 
 from ..errors import RightHemisphereError
@@ -77,9 +77,12 @@ class ScriptedRightHemisphere(RightHemisphere):
         self.calls.append("claims")
         return list(self._claims)
 
-    async def revise(self, answer: str, checks: list[ClaimCheck], state: WorldState) -> str:
+    async def revise(
+        self, answer: str, checks: list[ClaimCheck], state: WorldState, *, preferences: Sequence[str] = ()
+    ) -> str:
         self.calls.append("revise")
         self.revised_with = list(checks)
+        self.revised_for = list(preferences)
         return answer if self._revision is None else self._revision
 
     def _next(self, queue: deque[T], method: str) -> T:

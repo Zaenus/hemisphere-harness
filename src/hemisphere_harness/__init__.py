@@ -55,6 +55,7 @@ from .schemas import (
     Option,
     Outcome,
     Plan,
+    PreferenceCheck,
     Proposal,
     Question,
     Reintegration,
@@ -70,8 +71,9 @@ from .schemas import (
 )
 from .tools import FunctionToolbox, Toolbox, ToolResult, ToolSpec
 from .trace import Actor, Trace, TraceEvent, TracePrinter
+from .usage import HemisphereUsage, Usage
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = [
     "ActionResult",
@@ -98,6 +100,7 @@ __all__ = [
     "HarnessConfig",
     "HarnessError",
     "Hemisphere",
+    "HemisphereUsage",
     "HumanDecision",
     "JevLeftHemisphere",
     "LLMRightHemisphere",
@@ -113,6 +116,7 @@ __all__ = [
     "Option",
     "Outcome",
     "Plan",
+    "PreferenceCheck",
     "Proposal",
     "Provider",
     "Question",
@@ -135,6 +139,7 @@ __all__ = [
     "TraceEvent",
     "TracePrinter",
     "Turn",
+    "Usage",
     "Verdict",
     "WorldState",
     "build_left",

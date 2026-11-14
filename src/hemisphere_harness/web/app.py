@@ -155,7 +155,10 @@ def create_app(config: WebConfig) -> Starlette:
     def settings() -> Settings:
         return Settings(_env_file=config.env_file)
 
-    manager = RunManager(store, settings, demo_pace_s=config.demo_pace_s)
+    shown_host = "127.0.0.1" if config.host in ("0.0.0.0", "::") else config.host
+    manager = RunManager(
+        store, settings, demo_pace_s=config.demo_pace_s, base_url=f"http://{shown_host}:{config.port}/", transport=config.transport
+    )
 
     @asynccontextmanager
     async def lifespan(app: Starlette) -> AsyncIterator[None]:

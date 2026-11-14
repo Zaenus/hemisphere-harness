@@ -40,6 +40,14 @@ class HarnessConfig(BaseModel):
     """Before the person sees the answer, have the left check its factual claims, and the
     right revise any that do not hold. Claims are judged against the same two thresholds
     as the policy gate."""
+    screen_tool_output: bool = True
+    """Have the left read every tool's output first. Output that tries to instruct the agent
+    reaches the right only quarantined, marked as untrusted data; such lookup results are
+    dropped."""
+    right_price_input: float | None = Field(default=None, ge=0)
+    """Dollars per million input tokens to the right, to show what a run cost. Unset: no cost."""
+    right_price_output: float | None = Field(default=None, ge=0)
+    """Dollars per million output tokens from the right."""
 
     @model_validator(mode="after")
     def _permit_thresholds_are_ordered(self) -> Self:
@@ -66,6 +74,8 @@ class Settings(BaseSettings):
     right_temperature: float | None = None
     right_json_mode: bool = False
     right_effort: str | None = None
+    right_price_input: float | None = None
+    right_price_output: float | None = None
     """For Claude: how hard the model works (low, medium, high, xhigh, max). Unset: its default."""
 
     # Left hemisphere. LEFT_PROVIDER names an entry in providers.left_providers.
@@ -97,6 +107,7 @@ class Settings(BaseSettings):
     harness_max_steps: int = 6
     harness_policy: str = ""
     harness_check_answers: bool = True
+    harness_screen_tool_output: bool = True
     harness_lookup: str = ""
     """Where the answer check looks claims up: wikipedia, searxng or brave. Empty is off."""
     harness_lookup_url: str | None = None
@@ -106,6 +117,8 @@ class Settings(BaseSettings):
     harness_memory_file: str | None = None
     """Where the notes are kept. Default: .hemisphere/memory.json."""
     harness_mcp_config: str | None = None
+    harness_notify_url: str | None = None
+    harness_notify_on: str = "signoff"
     """A JSON file of MCP servers whose tools runs may use. See mcp_tools.py."""
 
     _dotenv_files: tuple[Path, ...] = PrivateAttr(default=())
@@ -142,4 +155,7 @@ class Settings(BaseSettings):
             max_steps=self.harness_max_steps,
             policy=self.harness_policy,
             check_answers=self.harness_check_answers,
+            screen_tool_output=self.harness_screen_tool_output,
+            right_price_input=self.right_price_input,
+            right_price_output=self.right_price_output,
         )

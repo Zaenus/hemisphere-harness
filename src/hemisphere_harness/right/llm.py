@@ -2,7 +2,7 @@
 
 import json
 from abc import abstractmethod
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from typing import Any, TypeVar
 
 from pydantic import BaseModel
@@ -93,11 +93,13 @@ class LLMRightHemisphere(RightHemisphere):
         kept = await self._structured(Remembered, prompts.remember_prompt(state, answer))
         return kept.notes[: prompts.MAX_NEW_NOTES]
 
-    async def revise(self, answer: str, checks: list[ClaimCheck], state: WorldState) -> str:
+    async def revise(
+        self, answer: str, checks: list[ClaimCheck], state: WorldState, *, preferences: Sequence[str] = ()
+    ) -> str:
         return await self.complete(
             [
                 {"role": "system", "content": prompts.ROLE},
-                {"role": "user", "content": prompts.revise_prompt(state, answer, checks)},
+                {"role": "user", "content": prompts.revise_prompt(state, answer, checks, preferences)},
             ]
         )
 
