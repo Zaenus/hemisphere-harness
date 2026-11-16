@@ -562,17 +562,32 @@ def write_mcp_config(tmp_path):
 async def test_the_tools_endpoint_lists_what_the_servers_offer(clean_env, tmp_path):
     async with client(make_app(tmp_path)) as http:
         none = (await http.get("/api/tools", headers=AUTH)).json()
-        assert none == {"config": None, "tools": [], "errors": {}}
+        assert none["config"] is None and none["errors"] == {} and none["problems"] == {}
+        assert {tool["name"] for tool in none["tools"]} == {"web_search", "fetch_url"}  # the built-ins, on by default
+        assert all(tool["source"] == "builtin" and not tool["needs_approval"] for tool in none["tools"])
 
         clean_env.setenv("HARNESS_MCP_CONFIG", str(write_mcp_config(tmp_path)))
         listed = (await http.get("/api/tools", headers=AUTH)).json()
         tools = {tool["name"]: tool["needs_approval"] for tool in listed["tools"]}
-        assert tools == {"shop.lookup_order": False, "shop.save_note": True, "shop.broken": False}
+        assert tools == {
+            "shop.lookup_order": False, "shop.save_note": True, "shop.broken": False,
+            "web_search": False, "fetch_url": False,
+        }  # fmt: skip
         assert (await http.get("/api/status", headers=AUTH)).json()["tools_config"] == str(tmp_path / "mcp.json")
 
         (tmp_path / "mcp.json").write_text("{broken")
         bad = await http.get("/api/tools", headers=AUTH)
         assert bad.status_code == 400 and "not valid JSON" in bad.json()["error"]
+
+
+async def test_turning_the_built_ins_off_empties_the_tools_endpoint(clean_env, tmp_path):
+    clean_env.setenv("HARNESS_WEB_SEARCH", "false")
+    clean_env.setenv("HARNESS_FETCH_URL", "false")
+
+    async with client(make_app(tmp_path)) as http:
+        listed = (await http.get("/api/tools", headers=AUTH)).json()
+
+    assert listed == {"config": None, "tools": [], "errors": {}, "problems": {}}
 
 
 async def test_a_live_run_calls_a_real_tool(clean_env, tmp_path, monkeypatch):

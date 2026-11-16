@@ -112,6 +112,12 @@ class Settings(BaseSettings):
     """Where the answer check looks claims up: wikipedia, searxng or brave. Empty is off."""
     harness_lookup_url: str | None = None
     harness_lookup_language: str = "en"
+    harness_web_search: bool = True
+    """Offer the built-in web_search tool, so a run can search while it works.
+
+    It searches the service HARNESS_LOOKUP names, or Wikipedia when that is unset."""
+    harness_fetch_url: bool = True
+    """Offer the built-in fetch_url tool, so a run can read a page it found."""
     harness_memory: bool = False
     """Keep short notes across conversations. Off by default."""
     harness_memory_file: str | None = None

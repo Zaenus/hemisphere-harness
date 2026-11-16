@@ -73,11 +73,49 @@ def test_a_hosted_right_is_shown_as_leaving_the_machine(clean_env, monkeypatch, 
 def test_all_local_suggests_making_it_a_rule(clean_env, monkeypatch, tmp_path):
     monkeypatch.setattr(local, "TRANSPORT", machine(OLLAMA))
     clean_env.setenv("RIGHT_MODEL", "gemma4")
+    clean_env.setenv("HARNESS_WEB_SEARCH", "false")
+    clean_env.setenv("HARNESS_FETCH_URL", "false")
 
     text, steps = report_text(Settings(), tmp_path)
 
     assert "Everything stays on this machine or its network." in text
     assert steps == ["Set HARNESS_LOCAL_ONLY=true to keep it that way."]
+
+
+def test_the_built_in_tools_are_shown_as_where_data_goes(clean_env, monkeypatch, tmp_path):
+    monkeypatch.setattr(local, "TRANSPORT", machine(OLLAMA))
+    clean_env.setenv("RIGHT_MODEL", "gemma4")
+
+    text, _ = report_text(Settings(), tmp_path)
+
+    assert "web_search: https://en.wikipedia.org" in text
+    assert "fetch_url: any address the agent opens" in text
+    assert "Data leaves this machine and its network, to:" in text
+
+
+def test_local_only_holds_fetch_url_to_this_machine_and_says_why_search_is_missing(clean_env, monkeypatch, tmp_path):
+    monkeypatch.setattr(local, "TRANSPORT", machine(OLLAMA))
+    clean_env.setenv("RIGHT_MODEL", "gemma4")
+    clean_env.setenv("HARNESS_LOCAL_ONLY", "true")
+
+    text, _ = report_text(Settings(), tmp_path)
+
+    assert "fetch_url: any address the agent opens" not in text.split("Data leaves")[0]  # local, so not leaving
+    assert "Everything stays on this machine or its network." in text
+    assert "HARNESS_LOCAL_ONLY is on" in text
+    assert "web_search is not available" in text
+
+
+def test_turning_the_built_ins_off_removes_their_destinations(clean_env, monkeypatch, tmp_path):
+    monkeypatch.setattr(local, "TRANSPORT", machine(OLLAMA))
+    clean_env.setenv("RIGHT_MODEL", "gemma4")
+    clean_env.setenv("HARNESS_WEB_SEARCH", "false")
+    clean_env.setenv("HARNESS_FETCH_URL", "false")
+
+    text, _ = report_text(Settings(), tmp_path)
+
+    assert "web_search" not in text
+    assert "fetch_url" not in text
 
 
 def test_setup_writes_the_chosen_local_models_and_local_only(clean_env, monkeypatch, tmp_path):

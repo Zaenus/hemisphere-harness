@@ -1163,12 +1163,15 @@ function renderEvent(event, run) {
     case "tools": {
       const tools = d.tools || [];
       const errors = Object.entries(d.errors || {});
+      const problems = Object.entries(d.problems || {});
       return card(null,
         h("div", { class: "text" }, `${tools.length} tool${tools.length === 1 ? "" : "s"} available to this run.`),
         tools.length ? h("div", { class: "chips spaced" }, tools.map((t) =>
           h("span", { class: `chip ${t.needs_approval ? "warn" : ""}`, title: t.description }, t.name))) : null,
         errors.map(([server, error]) => h("div", { class: "notice warn spaced" }, icon("alert"),
-          h("div", { class: "grow" }, h("strong", {}, `${server} did not start. `), error))));
+          h("div", { class: "grow" }, h("strong", {}, `${server} did not start. `), error))),
+        problems.map(([name, why]) => h("div", { class: "notice warn spaced" }, icon("alert"),
+          h("div", { class: "grow" }, h("strong", {}, `${name} is not available. `), why))));
     }
     case "reintegrate": {
       const r = d.reintegration;
@@ -1812,7 +1815,7 @@ function modelPicker(name, provider) {
       return;
     }
     for (const m of models) {
-      const notDecision = side === "left" && ["ollama", "auto"].includes(provider.name) && m.decision === false;
+      const notDecision = picker.side === "left" && ["ollama", "auto"].includes(provider.name) && m.decision === false;
       list.append(h("button", {
         class: "picker-item", type: "button", disabled: notDecision,
         title: notDecision ? "Not a decision model. Ollama refuses it at /v1/systemone." : m.id,
@@ -1934,6 +1937,8 @@ function loopSection() {
       answerCheckCard(),
       h("div", { class: "card stack" },
         h("div", { class: "field-label" }, "Tools and searches"),
+        boolField("HARNESS_WEB_SEARCH"),
+        boolField("HARNESS_FETCH_URL"),
         boolField("HARNESS_SCREEN_TOOL_OUTPUT")),
       notifyCard()));
 }
@@ -1999,26 +2004,28 @@ function toolsSection() {
     try {
       const data = await api("/api/tools");
       clear(result);
-      if (!data.config) {
-        result.append(h("p", { class: "muted" }, "No servers file is set."));
-      } else {
-        const bySource = new Map();
-        for (const tool of data.tools) {
-          if (!bySource.has(tool.source)) bySource.set(tool.source, []);
-          bySource.get(tool.source).push(tool);
-        }
-        for (const [source, tools] of bySource) {
-          result.append(h("div", { class: "card" },
-            h("div", { class: "field-label" }, source, h("span", { class: "faint" }, `${tools.length} tool${tools.length === 1 ? "" : "s"}`)),
-            h("div", { class: "tool-list" }, tools.map((t) => h("div", { class: "tool-row" },
-              h("code", {}, t.name),
-              h("span", { class: `chip ${t.needs_approval ? "warn" : "ok"}` }, t.needs_approval ? "needs your sign-off" : "runs freely"),
-              h("div", { class: "faint" }, t.description))))));
-        }
-        for (const [server, error] of Object.entries(data.errors)) {
-          result.append(h("div", { class: "notice warn" }, icon("alert"), h("div", { class: "grow" }, h("strong", {}, `${server} did not start. `), error)));
-        }
-        if (!data.tools.length && !Object.keys(data.errors).length) result.append(h("p", { class: "muted" }, "The file lists no servers."));
+      const bySource = new Map();
+      for (const tool of data.tools) {
+        if (!bySource.has(tool.source)) bySource.set(tool.source, []);
+        bySource.get(tool.source).push(tool);
+      }
+      for (const [source, tools] of bySource) {
+        result.append(h("div", { class: "card" },
+          h("div", { class: "field-label" }, source, h("span", { class: "faint" }, `${tools.length} tool${tools.length === 1 ? "" : "s"}`)),
+          h("div", { class: "tool-list" }, tools.map((t) => h("div", { class: "tool-row" },
+            h("code", {}, t.name),
+            h("span", { class: `chip ${t.needs_approval ? "warn" : "ok"}` }, t.needs_approval ? "needs your sign-off" : "runs freely"),
+            h("div", { class: "faint" }, t.description))))));
+      }
+      if (!data.tools.length && !Object.keys(data.errors).length && !Object.keys(data.problems || {}).length) {
+        result.append(h("p", { class: "muted" },
+          data.config ? "The file lists no servers." : "No servers file is set, and both built-ins are turned off in Loop and policy."));
+      }
+      for (const [server, error] of Object.entries(data.errors)) {
+        result.append(h("div", { class: "notice warn" }, icon("alert"), h("div", { class: "grow" }, h("strong", {}, `${server} did not start. `), error)));
+      }
+      for (const [name, why] of Object.entries(data.problems || {})) {
+        result.append(h("div", { class: "notice warn" }, icon("alert"), h("div", { class: "grow" }, h("strong", {}, `${name} is not available. `), why)));
       }
     } catch (error) {
       if (error.status !== 401) clear(result).append(h("div", { class: "notice danger" }, icon("alert"), h("div", { class: "grow" }, error.message)));
@@ -2027,7 +2034,7 @@ function toolsSection() {
   });
   return h("div", {},
     h("div", { class: "settings-title" }, "Tools"),
-    h("p", { class: "settings-sub" }, "Tools from MCP servers become options the right can propose. The left still chooses, and a tool that changes anything waits for your sign-off before it runs."),
+    h("p", { class: "settings-sub" }, "Tools become options the right can propose: the built-ins web_search and fetch_url, and anything an MCP server offers. The left still chooses, and a tool that changes anything waits for your sign-off before it runs."),
     h("div", { class: "stack" },
       textField("HARNESS_MCP_CONFIG", { placeholder: "mcp.json" }),
       h("div", { class: "row" }, check, h("span", { class: "faint" }, "Connects to each server, lists its tools, then disconnects.")),

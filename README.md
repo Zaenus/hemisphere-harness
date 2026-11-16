@@ -143,8 +143,9 @@ four parts:
   the agent continues and answers. Reject them and it looks for another way. Either can
   carry a note.
 
-Settings also has tabs for **Tools** (your MCP servers and what each tool may do alone)
-and **Memory** (what the agent remembers across conversations, with buttons to forget).
+Settings also has tabs for **Tools** (the built-in web search and page reader, plus your
+MCP servers and what each tool may do alone) and **Memory** (what the agent remembers
+across conversations, with buttons to forget).
 
 Each run shows what it cost: the right's tokens, the time each hemisphere took, and the
 money if you enter your provider's prices (`RIGHT_PRICE_INPUT` and `RIGHT_PRICE_OUTPUT`,
@@ -153,7 +154,7 @@ in the browser, and the server can call a webhook (`HARNESS_NOTIFY_URL`: Slack, 
 or anything that takes a JSON POST) so you hear about it with the page closed.
 
 Run history is kept in `./.hemisphere/`. Actions in the UI are simulated, except calls to
-the tools you connect.
+the tools you connect and the two built-ins.
 
 | Option | Default | |
 |---|---|---|
@@ -181,6 +182,23 @@ The server holds your API keys and can spend money with them, so it protects the
 The agent can act through tools from any MCP server: files, GitHub, databases, search,
 whatever the server offers. The right proposes concrete tool calls as options, the left
 chooses among them as usual, and the harness makes the call.
+
+**Two built-in tools come with the harness**, on by default, so a live run can search and
+read without any setup:
+
+- **`web_search`** searches the web and returns the matching pages: title, URL and a
+  short excerpt. It searches the service `HARNESS_LOOKUP` names, or Wikipedia when that
+  is unset (`HARNESS_LOOKUP_LANGUAGE` picks the language). Claim-check lookups are
+  unaffected: they still only happen when `HARNESS_LOOKUP` is set.
+- **`fetch_url`** fetches a page and returns its text, to read what a search excerpt only
+  summarises. Only `http` and `https` pages; long pages are cut short.
+
+Both are read-only, so they run without sign-off and the left may commit them like any
+other routine pick — and their output is screened, shown to the right, and counts as
+evidence exactly like any other tool's. Turn either off with `HARNESS_WEB_SEARCH=false`
+or `HARNESS_FETCH_URL=false`. Under `HARNESS_LOCAL_ONLY`, `fetch_url` refuses every
+address off this machine (redirects included), and `web_search` is left out with the
+reason shown in `doctor` and in Settings → Tools rather than failing the run.
 
 ```bash
 pip install "hemisphere-harness[web,mcp]"
@@ -608,6 +626,8 @@ Set these in the environment or in `.env`. All are optional.
 | `HARNESS_POLICY` | empty | Operator policy in plain language. Empty disables the gate. |
 | `HARNESS_CHECK_ANSWERS` | `true` | Check the answer's factual claims with the left before the person sees it. |
 | `HARNESS_MCP_CONFIG` | unset | A JSON file of MCP servers whose tools runs may use. Needs the `mcp` extra. |
+| `HARNESS_WEB_SEARCH` | `true` | The built-in `web_search` tool: searches `HARNESS_LOOKUP`'s service, or Wikipedia when that is unset. |
+| `HARNESS_FETCH_URL` | `true` | The built-in `fetch_url` tool: fetch a page and read its text. |
 | `HARNESS_LOOKUP` | empty | Where the answer check looks claims up: `wikipedia`, `searxng` or `brave`. |
 | `HARNESS_LOOKUP_URL` | unset | For `searxng`: the address of your instance. |
 | `HARNESS_LOOKUP_LANGUAGE` | `en` | For `wikipedia`: which language's Wikipedia. |
@@ -655,8 +675,9 @@ src/hemisphere_harness/
 ├── _http.py                POST with retries, shared by both clients
 ├── cli.py                  `hemisphere-harness`: providers, doctor, the web UI, chat, eval, replay, compare
 ├── conversation.py         Conversation: replies that remember, and sign-offs that continue
-├── tools.py                Toolbox, FunctionToolbox: tools options can call, and who must approve them
+├── tools.py                Toolbox, FunctionToolbox, CompositeToolbox: tools options can call, and who must approve them
 ├── mcp_tools.py            MCPToolbox: tools from MCP servers
+├── builtin_tools.py        BuiltinToolbox: web_search and fetch_url, the built-in read-only tools
 ├── lookup.py               searching Wikipedia, SearXNG or Brave for evidence on claims
 ├── memory.py               notes kept across conversations
 ├── usage.py                tokens, time and cost per run and per hemisphere
@@ -721,7 +742,8 @@ This is a first version, kept small on purpose.
   with the state. It answers every yes/no question 0.5, so with a policy set it sends
   every step back to the right. Its numbers say nothing about how Jev would answer.
 - **Tools are new.** They have been run live against a local MCP server, not yet against
-  the wider ecosystem of public servers.
+  the wider ecosystem of public servers. The two built-ins (`web_search`, `fetch_url`) are
+  exercised by the test suite against mock transports, not yet in a long live run.
 - **Lookups are only as good as the search.** Wikipedia covers general knowledge well and
   specialised or recent facts poorly; a claim with no evidence keeps its first verdict.
 - **Long conversations are cut** to the last eight exchanges for the right, and memory

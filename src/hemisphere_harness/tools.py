@@ -6,6 +6,8 @@ committed option by calling its tool. Two toolboxes ship:
 
     FunctionToolbox   plain Python functions, for your own code and for tests
     MCPToolbox        tools from MCP servers (see mcp_tools.py; needs the "mcp" extra)
+    BuiltinToolbox    the built-ins: web_search and fetch_url (see builtin_tools.py)
+    CompositeToolbox  several of the above as one, for a run that uses more than one
 
 Every tool says whether it needs a person's sign-off. One that does is never carried out
 by the hemispheres alone: the harness stops for a human, exactly as for an option the
@@ -19,6 +21,8 @@ from collections.abc import Awaitable, Callable
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, TypeAdapter, create_model
+
+from .errors import ConfigError
 
 Approval = Literal["always", "never", "unless_read_only"]
 """When a tool needs a person's sign-off. The default, unless_read_only, lets tools that
@@ -138,3 +142,48 @@ class FunctionToolbox(Toolbox):
             result = await result
         output = result if isinstance(result, str) else json.dumps(TypeAdapter(Any).dump_python(result, mode="json"))
         return ToolResult(ok=True, output=output)
+
+
+class CompositeToolbox(Toolbox):
+    """Several toolboxes as one, for runs that use MCP servers and the built-ins together.
+
+    Tools keep the names their own toolbox gives them. Two tools with the same name is a
+    configuration error, not a silent choice of one over the other. Closing the composite
+    closes every part; what a part owns outside itself, such as the searcher the built-ins
+    share with the answer check, stays with whoever created it.
+    """
+
+    def __init__(self, *parts: Toolbox | None) -> None:
+        self.parts = [part for part in parts if part is not None]
+        self.tools = [tool for part in self.parts for tool in part.tools]
+        seen: set[str] = set()
+        for tool in self.tools:
+            if tool.name in seen:
+                raise ConfigError(f"two tools are both named '{tool.name}': rename one of them")
+            seen.add(tool.name)
+
+    @property
+    def errors(self) -> dict[str, str]:
+        """What the parts could not connect: MCP servers that failed to start."""
+        merged: dict[str, str] = {}
+        for part in self.parts:
+            merged.update(getattr(part, "errors", {}))
+        return merged
+
+    @property
+    def problems(self) -> dict[str, str]:
+        """Built-ins the settings left out, and why. See builtin_tools.py."""
+        merged: dict[str, str] = {}
+        for part in self.parts:
+            merged.update(getattr(part, "problems", {}))
+        return merged
+
+    async def _call(self, name: str, arguments: dict[str, Any]) -> ToolResult:
+        for part in self.parts:
+            if part.get(name) is not None:
+                return await part.call(name, arguments)
+        return ToolResult(ok=False, output=f"there is no tool named '{name}'")
+
+    async def aclose(self) -> None:
+        for part in self.parts:
+            await part.aclose()

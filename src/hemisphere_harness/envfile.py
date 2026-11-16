@@ -79,6 +79,8 @@ FIELDS: tuple[Field, ...] = (
     Field("HARNESS_LOOKUP_URL", "SearXNG address", help="For searxng: your instance, e.g. http://localhost:8888. Its JSON format must be enabled."),
     Field("HARNESS_LOOKUP_LANGUAGE", "Wikipedia language", help="For wikipedia: en, de, pt, …"),
     Field("BRAVE_API_KEY", "Brave Search API key", "secret"),
+    Field("HARNESS_WEB_SEARCH", "Built-in web search", "bool", help="Adds a web_search tool, so a run can search while it works. Searches HARNESS_LOOKUP's service, or Wikipedia when that is off."),
+    Field("HARNESS_FETCH_URL", "Built-in page reader", "bool", help="Adds a fetch_url tool, so a run can open a page it found and read its text."),
     Field("HARNESS_MEMORY", "Remember across conversations", "bool", help="The right keeps short notes worth remembering; the left recalls the ones that bear on each new request. Stored only on this machine."),
     Field("HARNESS_MEMORY_FILE", "Memory file", help="Where the notes are kept. Default: memory.json next to the run history."),
     Field("HARNESS_MCP_CONFIG", "MCP servers file", help="A JSON file in the usual mcpServers format. Its tools become available to runs. Edit the file itself to add servers."),

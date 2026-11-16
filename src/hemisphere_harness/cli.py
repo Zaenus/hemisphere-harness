@@ -23,6 +23,7 @@ import webbrowser
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
+from .builtin_tools import builtin_toolbox
 from .config import HarnessConfig, Settings
 from .conversation import Conversation
 from .errors import ConfigError, HarnessError
@@ -34,6 +35,7 @@ from .memory import DEFAULT_FILE as DEFAULT_MEMORY_FILE
 from .memory import MemoryStore
 from .providers import build_left, build_right, left_providers, right_providers
 from .schemas import RunResult, RunStatus
+from .tools import CompositeToolbox
 from .trace import TracePrinter
 
 DEFAULT_PORT = 8765
@@ -203,37 +205,46 @@ def run_chat(args: argparse.Namespace) -> int:
 
     async def session() -> None:
         try:
-            toolbox = await toolbox_from_settings(settings.harness_mcp_config, local_only=settings.harness_local_only)
-        except ConfigError as exc:
-            print(exc, file=sys.stderr)
-            return
-        if toolbox is not None:
-            free = [t.name for t in toolbox.tools if not t.needs_approval]
-            gated = [t.name for t in toolbox.tools if t.needs_approval]
-            print(f"Tools: {', '.join(free) or 'none'} run freely; {', '.join(gated) or 'none'} wait for your /approve.")
-            for server, error in toolbox.errors.items():
-                print(f"  {server} did not start: {error}")
-        print(CHAT_HELP + "\n")
-        try:
             searcher = searcher_from_settings(settings)
         except ConfigError as exc:
             print(exc, file=sys.stderr)
             searcher = None
+        builtins = builtin_toolbox(settings, searcher)
+        try:
+            mcp = await toolbox_from_settings(settings.harness_mcp_config, local_only=settings.harness_local_only)
+        except ConfigError as exc:
+            print(exc, file=sys.stderr)
+            if builtins is not None:
+                await builtins.aclose()
+            if searcher is not None:
+                await searcher.aclose()
+            return
+        toolbox = CompositeToolbox(mcp, builtins)
+        if toolbox.tools:
+            free = [t.name for t in toolbox.tools if not t.needs_approval]
+            gated = [t.name for t in toolbox.tools if t.needs_approval]
+            print(f"Tools: {', '.join(free) or 'none'} run freely; {', '.join(gated) or 'none'} wait for your /approve.")
+        for name, why in toolbox.problems.items():
+            print(f"  {name} is not available: {why}")
+        for server, error in (mcp.errors if mcp is not None else {}).items():
+            print(f"  {server} did not start: {error}")
+        print(CHAT_HELP + "\n")
         if searcher is not None:
             print(f"Claims the left is unsure of are looked up on {searcher.name}.")
+        elif any(tool.name == "web_search" for tool in toolbox.tools):
+            print("web_search searches Wikipedia; HARNESS_LOOKUP names another service.")
         memory = MemoryStore(settings.harness_memory_file or DEFAULT_MEMORY_FILE) if settings.harness_memory else None
         if memory is not None:
             print(f"Memory is on: {len(memory.notes)} note(s) in {memory.path}.")
         harness = Harness(
             right, left, config=config, on_event=TracePrinter() if args.trace else None,
-            toolbox=toolbox, searcher=searcher, memory=memory,
+            toolbox=toolbox if toolbox.parts else None, searcher=searcher, memory=memory,
         )  # fmt: skip
         try:
             async with harness:
                 await chat_loop(Conversation(harness, context=args.context), read, print)
         finally:
-            if toolbox is not None:
-                await toolbox.aclose()
+            await toolbox.aclose()  # the MCP servers and the built-ins; never the shared searcher
             if searcher is not None:
                 await searcher.aclose()
 

@@ -4,6 +4,7 @@ calibrated decision model serves as the left.
 See README.md for the idea and docs/architecture.md for the contract.
 """
 
+from .builtin_tools import BuiltinToolbox, builtin_toolbox, search_problem
 from .config import HarnessConfig, Settings
 from .conversation import Conversation
 from .mcp_tools import MCPConfig, MCPToolbox, load_mcp_config
@@ -69,7 +70,7 @@ from .schemas import (
     Verdict,
     WorldState,
 )
-from .tools import FunctionToolbox, Toolbox, ToolResult, ToolSpec
+from .tools import CompositeToolbox, FunctionToolbox, Toolbox, ToolResult, ToolSpec
 from .trace import Actor, Trace, TraceEvent, TracePrinter
 from .usage import HemisphereUsage, Usage
 
@@ -82,6 +83,7 @@ __all__ = [
     "Answer",
     "AnswerCheck",
     "Authority",
+    "BuiltinToolbox",
     "ChatMessage",
     "ChoiceAnswer",
     "ChoiceQuestion",
@@ -89,6 +91,7 @@ __all__ = [
     "ClaimCheck",
     "ClaimList",
     "ClaimVerdict",
+    "CompositeToolbox",
     "ConfigError",
     "Conversation",
     "Decision",
@@ -144,6 +147,7 @@ __all__ = [
     "WorldState",
     "build_left",
     "build_right",
+    "builtin_toolbox",
     "dry_run",
     "left_providers",
     "load_mcp_config",
@@ -151,4 +155,5 @@ __all__ = [
     "register_openai_compatible",
     "register_right",
     "right_providers",
+    "search_problem",
 ]

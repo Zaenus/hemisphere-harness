@@ -21,6 +21,7 @@ import httpx
 from pydantic import BaseModel, Field, model_validator
 
 from .. import local
+from ..builtin_tools import builtin_toolbox
 from ..config import HarnessConfig, Settings
 from ..errors import ConfigError, HarnessError
 from ..evals.signoffs import record_signoff, scenario_from_signoff
@@ -46,9 +47,10 @@ from ..schemas import (
     WorldState,
 )
 from ..lookup import Searcher, searcher_from_settings
-from ..mcp_tools import MCPToolbox, toolbox_from_settings
+from ..mcp_tools import toolbox_from_settings
 from ..memory import MemoryStore
 from ..notify import notify, should_notify
+from ..tools import CompositeToolbox
 from ..trace import Actor, TraceEvent
 
 log = logging.getLogger(__name__)
@@ -208,15 +210,26 @@ class PacedLeft(MockLeftHemisphere):
         return await super()._decide(state, questions)
 
 
-def _tools_event(toolbox: MCPToolbox) -> TraceEvent:
+def _tools_event(toolbox: CompositeToolbox) -> TraceEvent:
     names = [tool.name for tool in toolbox.tools]
-    summary = f"{len(names)} tool(s) connected" + (f"; {len(toolbox.errors)} server(s) failed" if toolbox.errors else "")
+    problems = toolbox.problems
+    summary = f"{len(names)} tool(s) available"
+    if toolbox.errors:
+        summary += f"; {len(toolbox.errors)} server(s) failed"
+    if problems:
+        summary += f"; {len(problems)} built-in(s) left out"
+    details = [f"{server}: {error}" for server, error in toolbox.errors.items()]
+    details += [f"{name} left out: {why}" for name, why in problems.items()]
     return TraceEvent(
         actor=Actor.HARNESS,
         phase="tools",
         summary=summary,
-        details=[f"{server}: {error}" for server, error in toolbox.errors.items()],
-        data={"tools": [tool.model_dump(mode="json") for tool in toolbox.tools], "errors": toolbox.errors},
+        details=details,
+        data={
+            "tools": [tool.model_dump(mode="json") for tool in toolbox.tools],
+            "errors": toolbox.errors,
+            "problems": problems,
+        },
     )
 
 
@@ -491,17 +504,20 @@ class RunManager:
         # The outcome is recorded only after the tools are disconnected: a run that says it
         # is finished must not still hold a server process.
         outcome: dict[str, Any]
-        toolbox: MCPToolbox | None = None
+        box: CompositeToolbox | None = None
         try:
             # Tools are connected for this run only, inside its task, and closed when it ends.
-            toolbox = await toolbox_from_settings(
-                tools, log_dir=self.store.directory.parent, local_only=self._settings().harness_local_only
-            )
-            if toolbox is not None:
-                run.tools = [tool.name for tool in toolbox.tools]
-                on_event(_tools_event(toolbox))
+            # An offline run passes no config and gets no built-ins: the script alone.
+            current = self._settings()
+            mcp = await toolbox_from_settings(tools, log_dir=self.store.directory.parent, local_only=current.harness_local_only)
+            builtins = None if run.offline else builtin_toolbox(current, searcher, transport=self._transport)
+            box = CompositeToolbox(mcp, builtins)
+            if box.parts:
+                run.tools = [tool.name for tool in box.tools]
+                on_event(_tools_event(box))
             async with Harness(
-                right, left, config=config, act=simulate, on_event=on_event, toolbox=toolbox, searcher=searcher, memory=memory
+                right, left, config=config, act=simulate, on_event=on_event,
+                toolbox=box if box.parts else None, searcher=searcher, memory=memory,
             ) as harness:
                 result = await go(harness)
             outcome = {"status": result.status.value, "report": result.report, "state": result.state}
@@ -513,8 +529,8 @@ class RunManager:
             log.exception("run %s crashed", run.id)
             outcome = {"status": "failed", "error": f"{type(exc).__name__}: {exc}"}
         finally:
-            if toolbox is not None:
-                await toolbox.aclose()
+            if box is not None:
+                await box.aclose()  # the MCP servers and the built-ins; never the shared searcher
             if searcher is not None:
                 await searcher.aclose()
         for key, value in outcome.items():

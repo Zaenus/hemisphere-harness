@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import envfile, local
+from .builtin_tools import search_problem
 from .config import Settings
 from .errors import ConfigError, HarnessError
 from .left import LeftHemisphere, MockLeftHemisphere
@@ -35,9 +36,13 @@ SUGGESTED_LEFT = "tev1"
 class Destination:
     what: str
     url: str
+    forced_local: bool | None = None
+    """Set when the settings decide locality, such as a tool HARNESS_LOCAL_ONLY holds to this machine."""
 
     @property
     def local(self) -> bool:
+        if self.forced_local is not None:
+            return self.forced_local
         return local.is_local_url(self.url)
 
 
@@ -95,8 +100,23 @@ def _destinations(settings: Settings, report: Report) -> tuple[list[Destination]
         "brave": BRAVE_URL,
         "searxng": settings.harness_lookup_url or "",
     }
-    if lookup_urls.get(lookup):
+    lookup_configured = bool(lookup_urls.get(lookup))
+    if lookup_configured:
         out.append(Destination(f"lookups ({lookup})", lookup_urls[lookup]))
+    # The built-in tools exist only where a live run does: with a right hemisphere to make one.
+    if report.right is not None:
+        if settings.harness_web_search and not lookup_configured and search_problem(settings, lookup_configured=False) is None:
+            out.append(Destination("web_search", f"https://{settings.harness_lookup_language or 'en'}.wikipedia.org"))
+        if settings.harness_fetch_url:
+            out.append(
+                Destination(
+                    "fetch_url",
+                    "any address the agent opens",
+                    forced_local=True if settings.harness_local_only else None,
+                )
+            )
+        if (problem := search_problem(settings, lookup_configured=lookup_configured)) is not None:
+            problems.append(f"web_search is not available: {problem}")
     if settings.harness_notify_url:
         out.append(Destination("the notification webhook", settings.harness_notify_url))
     if settings.harness_mcp_config:

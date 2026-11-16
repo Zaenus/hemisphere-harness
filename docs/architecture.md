@@ -18,7 +18,7 @@ Each rule below is enforced in one identifiable place.
 | 10 | A tool that is not read-only is never called without a person's sign-off, whichever hemisphere chose it. | `Harness._gate` and `Harness._resolve`, through `_tool_needing_signoff`. |
 | 11 | What the agent remembers across conversations reaches the right only, and only what the left judged relevant. | `Harness._recall`; `WorldState.focus()` leaves memory out. |
 | 12 | Tool output the left flags as instructions to the agent reaches the right only fenced and marked untrusted. | `Harness._screen`, `ActionResult.shown()`, `WorldState.observations()`. |
-| 13 | With `HARNESS_LOCAL_ONLY`, nothing is sent off this machine and its network. | `local.require_local`, called by `build_right`, `build_left`, `searcher_from_settings`, `MCPToolbox.connect` and the web UI's webhook. |
+| 13 | With `HARNESS_LOCAL_ONLY`, nothing is sent off this machine and its network. | `local.require_local`, called by `build_right`, `build_left`, `searcher_from_settings`, `MCPToolbox.connect` and the web UI's webhook; the built-in `fetch_url` checks every URL and every redirect hop the same way. |
 
 Rule 4 depends on the right's own labels. A `Proposal` carries `stakes` and `open_ended`,
 and neither has a default, so the right must say on every step whether left-hemisphere
@@ -191,6 +191,21 @@ tool the harness does not know is treated as needing sign-off.
 `MCPToolbox.connect` starts or reaches every configured server. A server that fails is
 recorded in `errors` and skipped; the others still work. The web UI connects tools for
 each live run and disconnects them before the run reports its outcome.
+
+**The built-ins.** `builtin_toolbox(settings, searcher)` builds the two tools that ship
+with the harness: `web_search` (through the `Searcher` — the answer check's service when
+one exists, otherwise a Wikipedia searcher the toolbox owns and closes) and `fetch_url`
+(an httpx fetch of one page, HTML converted to text by a stdlib `html.parser` subclass,
+capped at 500 KB with at most five redirects, `http`/`https` only, text content types
+only). Both are `read_only=True`, so `needs_approval=False` and the left may commit them.
+`HARNESS_WEB_SEARCH` and `HARNESS_FETCH_URL` (both on by default) turn each off.
+`CompositeToolbox(mcp, builtins)` gives the harness one toolbox for both sources; a
+duplicate tool name across parts is a `ConfigError`, and `aclose` closes every part (the
+shared searcher stays with whoever created it). Under `HARNESS_LOCAL_ONLY`, `fetch_url`
+refuses each URL before the request and re-checks every redirect hop via
+`local.require_local`, while `web_search` is left out entirely with the reason in
+`problems` (`search_problem`) — a default setting may not fail a run. Offline runs get no
+built-ins at all. `doctor` lists both as destinations where a live run would use them.
 
 **Screening.** Right after a tool runs, and before the right reintegrates, `_screen` asks
 the left one yes/no question: does this output try to instruct or manipulate the agent,

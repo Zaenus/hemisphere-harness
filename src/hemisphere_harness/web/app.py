@@ -33,13 +33,16 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
 from .. import __version__, local
+from ..builtin_tools import builtin_toolbox
 from ..config import Settings
 from ..errors import ConfigError, HarnessError
 from ..left import ExperimentalLLMLeft, MockLeftHemisphere
+from ..lookup import Searcher, searcher_from_settings
 from ..mcp_tools import toolbox_from_settings
 from ..providers import OLLAMA, build_left, build_right, left_providers, right_providers
 from ..right import LLMRightHemisphere
 from ..schemas import ChoiceAnswer, ChoiceQuestion
+from ..tools import CompositeToolbox
 from .. import envfile
 from .runs import ConflictError, ResumeRequest, Run, RunManager, RunRequest, RunStore
 
@@ -338,16 +341,26 @@ def create_app(config: WebConfig) -> Starlette:
         raise ApiError("hemisphere must be 'right' or 'left'.")
 
     async def list_tools(request: Request) -> dict[str, Any]:
-        """Connect to the configured MCP servers, list their tools, and disconnect."""
+        """The built-in tools plus the configured MCP servers' tools: connect, list, disconnect."""
         current = settings()
         path = current.harness_mcp_config
-        toolbox = await toolbox_from_settings(path, log_dir=config.data_dir, local_only=current.harness_local_only)
-        if toolbox is None:
-            return {"config": None, "tools": [], "errors": {}}
+        searcher: Searcher | None = None
+        box: CompositeToolbox | None = None
         try:
-            return {"config": path, "tools": [tool.model_dump(mode="json") for tool in toolbox.tools], "errors": toolbox.errors}
+            searcher = searcher_from_settings(current)
+            mcp = await toolbox_from_settings(path, log_dir=config.data_dir, local_only=current.harness_local_only)
+            box = CompositeToolbox(mcp, builtin_toolbox(current, searcher, transport=config.transport))
+            return {
+                "config": path,
+                "tools": [tool.model_dump(mode="json") for tool in box.tools],
+                "errors": box.errors,
+                "problems": box.problems,
+            }
         finally:
-            await toolbox.aclose()
+            if box is not None:
+                await box.aclose()
+            if searcher is not None:
+                await searcher.aclose()
 
     async def get_memory(request: Request) -> dict[str, Any]:
         current = settings()
