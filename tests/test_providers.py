@@ -101,7 +101,7 @@ async def test_local_provider_needs_no_key(clean_env, wire, provider, endpoint):
     assert "authorization" not in wire[0].headers
 
 
-def test_openai_is_the_default_provider(clean_env):
+def test_with_nothing_local_running_auto_falls_back_to_openai_when_its_key_is_set(clean_env):
     right = build_right(use(clean_env, RIGHT_MODEL="m", OPENAI_API_KEY="k"))
 
     assert isinstance(right, OpenAICompatibleRight)
@@ -368,7 +368,7 @@ async def test_ollama_on_another_machine_and_a_base_url_ending_in_v1(clean_env, 
 
 
 def test_ollama_left_needs_a_model_and_says_what_kind(clean_env):
-    with pytest.raises(ConfigError, match="LEFT_MODEL, a decision model such as autotrust-jev"):
+    with pytest.raises(ConfigError, match="LEFT_MODEL, a decision model such as tev1"):
         build_left(use(clean_env, LEFT_PROVIDER="ollama"))
 
 

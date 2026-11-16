@@ -64,7 +64,7 @@ class Settings(BaseSettings):
     )
 
     # Right hemisphere. RIGHT_PROVIDER names an entry in providers.right_providers.
-    right_provider: str = "openai"
+    right_provider: str = "auto"
     right_model: str | None = None
     right_base_url: str | None = None
     """Overrides the provider's own endpoint."""
@@ -117,6 +117,8 @@ class Settings(BaseSettings):
     harness_memory_file: str | None = None
     """Where the notes are kept. Default: .hemisphere/memory.json."""
     harness_mcp_config: str | None = None
+    harness_local_only: bool = False
+    """Refuse every endpoint that is not on this machine or its network."""
     harness_notify_url: str | None = None
     harness_notify_on: str = "signoff"
     """A JSON file of MCP servers whose tools runs may use. See mcp_tools.py."""

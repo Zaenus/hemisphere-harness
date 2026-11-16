@@ -1,6 +1,7 @@
 """A right hemisphere for any model that turns a chat into text."""
 
 import json
+import re
 from abc import abstractmethod
 from collections.abc import AsyncIterator, Sequence
 from typing import Any, TypeVar
@@ -68,11 +69,24 @@ class LLMRightHemisphere(RightHemisphere):
         return await self._structured(Reintegration, prompts.reintegrate_prompt(state, step))
 
     async def generate(self, prompt: str, state: WorldState | None = None) -> str:
-        return await self.complete(self._free_text(prompt, state))
+        return await self._text(self._free_text(prompt, state))
 
     async def stream(self, prompt: str, state: WorldState | None = None) -> AsyncIterator[str]:
+        thinking = _ReasoningFilter()
         async for piece in self.complete_stream(self._free_text(prompt, state)):
-            yield piece
+            shown = thinking.feed(piece)
+            if shown:
+                yield shown
+        rest = thinking.flush()
+        if rest:
+            yield rest
+
+    async def _text(self, messages: list[ChatMessage]) -> str:
+        """`complete` for text the person will read: the model's thinking left out."""
+        text = strip_reasoning(await self.complete(messages))
+        if not text:
+            raise RightHemisphereError("the LLM's reply was all thinking and no answer")
+        return text
 
     async def complete_stream(self, messages: list[ChatMessage]) -> AsyncIterator[str]:
         """`complete`, in pieces as the model writes. Override where the API can stream.
@@ -96,7 +110,7 @@ class LLMRightHemisphere(RightHemisphere):
     async def revise(
         self, answer: str, checks: list[ClaimCheck], state: WorldState, *, preferences: Sequence[str] = ()
     ) -> str:
-        return await self.complete(
+        return await self._text(
             [
                 {"role": "system", "content": prompts.ROLE},
                 {"role": "user", "content": prompts.revise_prompt(state, answer, checks, preferences)},
@@ -125,9 +139,94 @@ class LLMRightHemisphere(RightHemisphere):
         )
 
 
+REASONING_TAGS = ("think", "thinking", "reasoning")
+"""Tags that local reasoning models (Qwen3, DeepSeek-R1, …) wrap their thinking in, when the
+server leaves it in the reply instead of a separate field."""
+
+_REASONING = re.compile(rf"<({'|'.join(REASONING_TAGS)})>.*?</\1>", re.DOTALL | re.IGNORECASE)
+_UNCLOSED = re.compile(rf"<(?:{'|'.join(REASONING_TAGS)})>.*", re.DOTALL | re.IGNORECASE)
+_ORPHAN_CLOSE = re.compile(rf"^.*</(?:{'|'.join(REASONING_TAGS)})>", re.DOTALL | re.IGNORECASE)
+
+
+def strip_reasoning(text: str) -> str:
+    """The reply without the model's thinking.
+
+    Removes closed blocks, a block that was never closed (the reply ran out inside it),
+    and everything before a closing tag with no opening one, which some chat templates
+    produce by starting the reply already inside the block.
+    """
+    text = _REASONING.sub("", text)
+    text = _ORPHAN_CLOSE.sub("", text)
+    return _UNCLOSED.sub("", text).strip()
+
+
 def _extract_json(text: str) -> Any:
-    """Parse the JSON object in a reply, tolerating code fences or prose around it."""
-    start, end = text.find("{"), text.rfind("}")
-    if start == -1 or end < start:
-        raise ValueError("the reply contains no JSON object")
-    return json.loads(text[start : end + 1])
+    """Parse the JSON object in a reply, tolerating thinking, code fences or prose around it.
+
+    Returns the first object that decodes, so braces in prose before it do no harm.
+    """
+    text = strip_reasoning(text)
+    decoder = json.JSONDecoder()
+    start = text.find("{")
+    error: json.JSONDecodeError | None = None
+    while start != -1:
+        try:
+            found, _ = decoder.raw_decode(text, start)
+        except json.JSONDecodeError as exc:
+            error = error or exc
+        else:
+            if isinstance(found, dict):
+                return found
+        start = text.find("{", start + 1)
+    if error is not None:
+        raise ValueError(f"the reply contains no valid JSON object: {error}")
+    raise ValueError("the reply contains no JSON object")
+
+
+class _ReasoningFilter:
+    """Drops thinking blocks from a stream whose tags may be split across pieces."""
+
+    _opening = tuple(f"<{tag}>" for tag in REASONING_TAGS)
+    _closing = tuple(f"</{tag}>" for tag in REASONING_TAGS)
+
+    def __init__(self) -> None:
+        self._held = ""
+        self._inside = False
+
+    def feed(self, piece: str) -> str:
+        """The part of `piece` that can be shown now. Raises on a closing tag nothing opened."""
+        text, shown = self._held + piece, []
+        while text:
+            tags = self._closing if self._inside else self._opening
+            lowered = text.lower()
+            at, tag = min(((lowered.find(t), t) for t in tags if t in lowered), default=(-1, ""))
+            if not self._inside and at == -1 and any(t in lowered for t in self._closing):
+                # The template started inside a block: what was shown was thinking.
+                raise RightHemisphereError("the model's thinking reached the answer stream")
+            if at == -1:
+                keep = _partial_tag_length(lowered, (*self._opening, *self._closing))
+                if not self._inside:
+                    shown.append(text[: len(text) - keep])
+                self._held = text[len(text) - keep :]
+                return "".join(shown)
+            if not self._inside:
+                shown.append(text[:at])
+            text = text[at + len(tag) :]
+            self._inside = not self._inside
+        self._held = ""
+        return "".join(shown)
+
+
+    def flush(self) -> str:
+        """What was held back in case it began a tag, once the stream has ended."""
+        held, self._held = self._held, ""
+        return "" if self._inside else held
+
+
+def _partial_tag_length(text: str, tags: Sequence[str]) -> int:
+    """How many characters at the end of `text` could be the start of one of `tags`."""
+    longest = max(len(tag) for tag in tags)
+    for size in range(min(longest - 1, len(text)), 0, -1):
+        if any(tag.startswith(text[-size:]) for tag in tags):
+            return size
+    return 0

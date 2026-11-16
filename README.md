@@ -69,30 +69,41 @@ python -m hemisphere_harness.examples.simple_loop
 With nothing configured the example runs offline. Both hemispheres are scripted
 stand-ins, so what you see is the control flow, and no model is judging anything.
 
-To use real models, copy `.env.example` to `.env` and fill it in:
+### Local first
+
+Both hemispheres run on your own machine through [Ollama](https://ollama.com) (or LM
+Studio, llama.cpp, vLLM), with no keys and nothing leaving it. The harness looks for
+local servers before anything hosted:
 
 ```bash
-cp .env.example .env
+ollama pull tev1                     # a 4.6 GB decision model: the left finds it by itself
+ollama pull gemma4                   # or any chat model you like, for the right
+
+hemisphere-harness doctor --setup    # pick the models; writes .env
+hemisphere-harness doctor --check    # one small real call to each hemisphere
 python -m hemisphere_harness.examples.simple_loop
-python -m hemisphere_harness.examples.simple_loop "Your own goal or ticket text"
 ```
+
+`doctor` shows the local servers it found and their models, what your settings make of
+them, and **every place a run would send data**. `HARNESS_LOCAL_ONLY=true` turns "nothing
+leaves this machine" from how things happen to be set into a rule: any hemisphere,
+lookup, webhook or MCP server that is not on this machine or its network is refused.
 
 | You set | Right hemisphere | Left hemisphere |
 |---|---|---|
-| nothing | scripted | scripted mock |
-| `RIGHT_PROVIDER`, `RIGHT_MODEL`, and that provider's key | your LLM | heuristic mock |
-| the same, and `JEV_API_KEY` | your LLM | TypeSafe's hosted Jev |
-| the same, and `LEFT_PROVIDER=ollama`, `LEFT_MODEL` | your LLM | a local decision model |
+| nothing | scripted | a local decision model if Ollama has one, otherwise the mock |
+| `RIGHT_MODEL` that a local server serves | that local model | the same |
+| `RIGHT_PROVIDER`, `RIGHT_MODEL`, and that provider's key | a hosted LLM | the same |
+| `JEV_API_KEY`, and no local decision model | | TypeSafe's hosted Jev |
 
-Both hemispheres can run on your own machine through [Ollama](https://ollama.com), with
-no keys and nothing leaving it:
+### Hosted providers
+
+To use a hosted model, copy `.env.example` to `.env` and fill it in, or set it up in the
+web UI:
 
 ```bash
-ollama pull tev1             # a 4.6 GB decision model, for the left
-
-RIGHT_PROVIDER=ollama RIGHT_MODEL=<a chat model you have pulled> \
-LEFT_PROVIDER=ollama  LEFT_MODEL=tev1 \
-python -m hemisphere_harness.examples.simple_loop
+cp .env.example .env
+python -m hemisphere_harness.examples.simple_loop "Your own goal or ticket text"
 ```
 
 The example never touches a real system. Its actions are simulated.
@@ -473,7 +484,8 @@ with `RIGHT_MODEL`, and supply the provider's key where it needs one.
 
 | `RIGHT_PROVIDER` | Endpoint | Key variable |
 |---|---|---|
-| `openai` (default) | `https://api.openai.com/v1` | `OPENAI_API_KEY` |
+| `auto` (default) | a local server that serves `RIGHT_MODEL`: Ollama, LM Studio, llama.cpp or vLLM, at their usual ports. Failing that, `openai` if `OPENAI_API_KEY` is set | none |
+| `openai` | `https://api.openai.com/v1` | `OPENAI_API_KEY` |
 | `anthropic` or `claude` | Anthropic's API, through its SDK (needs the `anthropic` extra) | `ANTHROPIC_API_KEY`, or an `ant auth login` profile |
 | `gemini` or `google` | `https://generativelanguage.googleapis.com/v1beta/openai` | `GEMINI_API_KEY` |
 | `nvidia` | `https://integrate.api.nvidia.com/v1` | `NVIDIA_API_KEY` |
@@ -489,7 +501,7 @@ The left hemisphere is a decision model. Pick one with `LEFT_PROVIDER`.
 
 | `LEFT_PROVIDER` | What it is | Needs |
 |---|---|---|
-| `auto` (default) | `jev` if `JEV_API_KEY` is set, otherwise `mock` | |
+| `auto` (default) | The largest decision model Ollama serves on this machine (only `LEFT_MODEL`, if it is set). Failing that, `jev` if `JEV_API_KEY` is set, otherwise `mock` | |
 | `jev` | TypeSafe AI's hosted Jev | `JEV_API_KEY` |
 | `ollama` | A decision model served by Ollama on your own machine | `LEFT_MODEL` |
 | `systemone` | Any other server that implements `POST /v1/systemone` | `LEFT_BASE_URL`, `LEFT_MODEL` |
@@ -635,10 +647,13 @@ src/hemisphere_harness/
 ├── schemas.py              questions, answers, decisions, everything the right produces
 ├── config.py               thresholds and environment settings
 ├── providers.py            the provider registries, built-in presets, plugin loading
+├── local.py                local model servers and their models; what counts as local
+├── doctor.py               `hemisphere-harness doctor`: what runs here, and where data goes
+├── envfile.py              the settings an interface can change, and the .env file it writes
 ├── trace.py                the record of who did what, and its printer
 ├── errors.py
 ├── _http.py                POST with retries, shared by both clients
-├── cli.py                  `hemisphere-harness`: lists providers, starts the web UI, or chats
+├── cli.py                  `hemisphere-harness`: providers, doctor, the web UI, chat, eval, replay, compare
 ├── conversation.py         Conversation: replies that remember, and sign-offs that continue
 ├── tools.py                Toolbox, FunctionToolbox: tools options can call, and who must approve them
 ├── mcp_tools.py            MCPToolbox: tools from MCP servers
@@ -664,7 +679,6 @@ src/hemisphere_harness/
 ├── web/
 │   ├── app.py              the server: JSON API, live event stream, access control
 │   ├── runs.py             runs started from the UI, streamed and kept on disk
-│   ├── envfile.py          the settings the UI can change, and the .env file it writes
 │   └── static/             the page: plain HTML, CSS and JavaScript, no build step
 └── examples/simple_loop.py
 tests/

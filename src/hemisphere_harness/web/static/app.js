@@ -1723,12 +1723,13 @@ function providerTiles(side, providers, selected) {
       h("span", { class: "s" }, tileSummary(p, side)));
 
   if (side === "right") {
-    const order = ["anthropic", "openai", "gemini", "nvidia", "xai", "openrouter", "ollama", "lmstudio", "vllm", "llamacpp", "openai-compatible"];
+    const order = ["auto", "ollama", "lmstudio", "llamacpp", "vllm", "anthropic", "openai", "gemini", "nvidia", "xai", "openrouter", "openai-compatible"];
     providers = [...providers].sort((a, b) => (order.indexOf(a.name) + 1 || 99) - (order.indexOf(b.name) + 1 || 99));
+    const local = (p) => p.name === "auto" || (p.base_url && p.base_url.startsWith("http://localhost"));
     const groups = [
-      ["Hosted", providers.filter((p) => p.base_url && !p.base_url.startsWith("http://localhost"))],
-      ["On your machine", providers.filter((p) => p.base_url && p.base_url.startsWith("http://localhost"))],
-      ["Other", providers.filter((p) => !p.base_url)],
+      ["On your machine", providers.filter(local)],
+      ["Hosted", providers.filter((p) => p.base_url && !local(p))],
+      ["Other", providers.filter((p) => !p.base_url && !local(p))],
     ];
     return groups.filter(([, list]) => list.length).map(([title, list]) =>
       h("div", {}, h("div", { class: "tile-group" }, title), h("div", { class: "tiles" }, list.map(tile))));
@@ -1741,12 +1742,13 @@ function providerTiles(side, providers, selected) {
 function tileSummary(p, side) {
   if (p.plugin) return "plugin";
   if (side === "right") {
+    if (p.name === "auto") return "finds the local server that has the model";
     if (!p.base_url) return "any OpenAI-compatible server";
     const host = p.base_url.replace(/^https?:\/\//, "").replace(/\/.*$/, "");
     return p.api_key_env ? host : `${host} · no key`;
   }
   return {
-    auto: "Jev if its key is set, otherwise the mock",
+    auto: "a local decision model, else Jev, else the mock",
     jev: "hosted · needs JEV_API_KEY",
     ollama: "local decision model · no key",
     systemone: "any /v1/systemone server",
@@ -1757,7 +1759,7 @@ function tileSummary(p, side) {
 
 function modelField(side, provider) {
   const name = side === "right" ? "RIGHT_MODEL" : provider.name === "jev" ? "JEV_MODEL" : "LEFT_MODEL";
-  const canList = side === "right" || ["ollama", "llm-experimental", "systemone"].includes(provider.name);
+  const canList = side === "right" || ["auto", "ollama", "llm-experimental", "systemone"].includes(provider.name);
   const field = textField(name, {
     label: "Model",
     placeholder: fieldInfo(name).default || "Type the model id, or fetch the list",
@@ -1810,12 +1812,13 @@ function modelPicker(name, provider) {
       return;
     }
     for (const m of models) {
-      const notDecision = provider.name === "ollama" && m.decision === false;
+      const notDecision = side === "left" && ["ollama", "auto"].includes(provider.name) && m.decision === false;
       list.append(h("button", {
         class: "picker-item", type: "button", disabled: notDecision,
         title: notDecision ? "Not a decision model. Ollama refuses it at /v1/systemone." : m.id,
         onclick: () => { settings.draft[name] = m.id; settings.picker = null; renderSettings(); },
       }, h("span", {}, m.id),
+        m.server ? h("span", { class: "chip" }, providerName(m.server, "right")) : null,
         m.decision === true ? h("span", { class: "chip left" }, "decision") : notDecision ? h("span", { class: "chip" }, "chat") : null));
     }
   };
@@ -1827,7 +1830,7 @@ function modelPicker(name, provider) {
 
 function rightSection() {
   const data = settings.data;
-  const selectedName = current("RIGHT_PROVIDER") || fieldInfo("RIGHT_PROVIDER").default || "openai";
+  const selectedName = current("RIGHT_PROVIDER") || fieldInfo("RIGHT_PROVIDER").default || "auto";
   const provider = data.right_providers.find((p) => p.name === selectedName || (p.aliases || []).includes(selectedName)) || { name: selectedName, settings: [] };
   const fields = [];
   if (!provider.plugin) {
@@ -1875,7 +1878,7 @@ function leftSection() {
       "An offline stand-in. It answers every policy question 0.5 and picks options by word overlap. Its numbers mean nothing.")));
   }
   if (provider.name === "auto") {
-    blocks.push(h("p", { class: "muted" }, "Uses Jev when its API key is set, and the mock otherwise."), secretField("JEV_API_KEY", "Jev API key"));
+    blocks.push(h("p", { class: "muted" }, "Uses the largest decision model Ollama serves on this machine, or the one you name. Without one, Jev if its API key is set, and the mock otherwise."), secretField("JEV_API_KEY", "Jev API key"));
   }
   for (const name of provider.settings || []) {
     const f = fieldInfo(name);
@@ -1916,6 +1919,7 @@ function loopSection() {
     h("div", { class: "settings-title" }, "Loop and policy"),
     h("p", { class: "settings-sub" }, "When the left may commit on its own, and the rules that bind both hemispheres."),
     h("div", { class: "stack" },
+      h("div", { class: "card stack" }, boolField("HARNESS_LOCAL_ONLY")),
       textField("HARNESS_POLICY", { rows: 3, placeholder: "for example: Refunds or credits above $500 need human sign-off." }),
       h("div", { class: "card" },
         h("div", { class: "field-label" }, "Policy gate"),

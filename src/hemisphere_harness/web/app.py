@@ -32,7 +32,7 @@ from starlette.responses import FileResponse, JSONResponse, PlainTextResponse, R
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-from .. import __version__
+from .. import __version__, local
 from ..config import Settings
 from ..errors import ConfigError, HarnessError
 from ..left import ExperimentalLLMLeft, MockLeftHemisphere
@@ -40,7 +40,7 @@ from ..mcp_tools import toolbox_from_settings
 from ..providers import OLLAMA, build_left, build_right, left_providers, right_providers
 from ..right import LLMRightHemisphere
 from ..schemas import ChoiceAnswer, ChoiceQuestion
-from . import envfile
+from .. import envfile
 from .runs import ConflictError, ResumeRequest, Run, RunManager, RunRequest, RunStore
 
 STATIC = Path(__file__).parent / "static"
@@ -208,7 +208,7 @@ def create_app(config: WebConfig) -> Starlette:
         left: dict[str, Any] = {"provider": current.left_provider}
         if current.right_model:
             try:
-                built = build_right(current)
+                built = await asyncio.to_thread(build_right, current)
                 right.update(ready=True, label=f"{built.name} · {current.right_model}")
                 await built.aclose()
             except ConfigError as exc:
@@ -216,7 +216,7 @@ def create_app(config: WebConfig) -> Starlette:
         else:
             right.update(ready=False, problem="No model is chosen.")
         try:
-            built_left = build_left(current)
+            built_left = await asyncio.to_thread(build_left, current)
             model = current.jev_model if built_left.name == "jev" else current.left_model
             left.update(
                 ready=True,
@@ -305,7 +305,7 @@ def create_app(config: WebConfig) -> Starlette:
         if hemisphere == "right":
             if not current.right_model:
                 raise ApiError("Choose a model first.")
-            right = build_right(current)
+            right = await asyncio.to_thread(build_right, current)
             try:
                 if not isinstance(right, LLMRightHemisphere):
                     return {"ok": True, "message": f"{right.name} is built; it has no simple check."}
@@ -317,7 +317,7 @@ def create_app(config: WebConfig) -> Starlette:
             ms = (time.perf_counter() - started) * 1000
             return {"ok": True, "message": f"{current.right_model} replied “{reply.strip()[:60]}” in {ms:.0f} ms."}
         if hemisphere == "left":
-            left = build_left(current)
+            left = await asyncio.to_thread(build_left, current)
             try:
                 result = await left.decide(
                     {"situation": "A shopper asks which of two items is a fruit."},
@@ -339,8 +339,9 @@ def create_app(config: WebConfig) -> Starlette:
 
     async def list_tools(request: Request) -> dict[str, Any]:
         """Connect to the configured MCP servers, list their tools, and disconnect."""
-        path = settings().harness_mcp_config
-        toolbox = await toolbox_from_settings(path, log_dir=config.data_dir)
+        current = settings()
+        path = current.harness_mcp_config
+        toolbox = await toolbox_from_settings(path, log_dir=config.data_dir, local_only=current.harness_local_only)
         if toolbox is None:
             return {"config": None, "tools": [], "errors": {}}
         try:
@@ -487,6 +488,11 @@ async def _right_models(
     client: httpx.AsyncClient, settings: Settings, provider_name: str, base_url: str | None, api_key: str | None
 ) -> list[dict[str, Any]]:
     provider = right_providers.get(provider_name)
+    if provider.name == "auto":
+        if base_url:
+            return await _openai_models(client, base_url, api_key)
+        found = await asyncio.to_thread(local.scan, decisions=False)
+        return [{"id": model.id, "server": f.server.provider} for f in found for model in f.models]
     if provider.name == "anthropic":
         return await _anthropic_models(settings, api_key)
     home = provider.base_url
@@ -522,8 +528,8 @@ async def _left_models(
 ) -> list[dict[str, Any]]:
     provider = left_providers.get(provider_name)
     key = api_key or (settings.left_api_key.get_secret_value() if settings.left_api_key else None)
-    if provider.name == "ollama":
-        root = (base_url or settings.left_base_url or OLLAMA).rstrip("/").removesuffix("/v1")
+    if provider.name in ("ollama", "auto"):
+        root = (base_url or settings.left_base_url or local.ollama_url()).rstrip("/").removesuffix("/v1")
         tags = await client.get(f"{root}/api/tags")
         tags.raise_for_status()
         names = sorted(model["name"] for model in tags.json().get("models", []))

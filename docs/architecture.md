@@ -18,6 +18,7 @@ Each rule below is enforced in one identifiable place.
 | 10 | A tool that is not read-only is never called without a person's sign-off, whichever hemisphere chose it. | `Harness._gate` and `Harness._resolve`, through `_tool_needing_signoff`. |
 | 11 | What the agent remembers across conversations reaches the right only, and only what the left judged relevant. | `Harness._recall`; `WorldState.focus()` leaves memory out. |
 | 12 | Tool output the left flags as instructions to the agent reaches the right only fenced and marked untrusted. | `Harness._screen`, `ActionResult.shown()`, `WorldState.observations()`. |
+| 13 | With `HARNESS_LOCAL_ONLY`, nothing is sent off this machine and its network. | `local.require_local`, called by `build_right`, `build_left`, `searcher_from_settings`, `MCPToolbox.connect` and the web UI's webhook. |
 
 Rule 4 depends on the right's own labels. A `Proposal` carries `stakes` and `open_ended`,
 and neither has a default, so the right must say on every step whether left-hemisphere
@@ -292,6 +293,29 @@ because that is the calibrated chance that the pick is right.
 
 A bad Jev key does not stop a run. Every step shows `LEFT decide unavailable: …` in the
 trace and is decided by the right.
+
+## Local first
+
+The default providers, `auto` on both sides, look on this machine first (`local.py`).
+The right uses the first local server (Ollama, LM Studio, llama.cpp, vLLM) that serves
+`RIGHT_MODEL`; the left uses the largest decision model Ollama serves. Hosted services
+are the fallback, never the first choice. Every probe goes to a loopback address with a
+half-second timeout, and a server that does not answer is simply absent.
+
+`HARNESS_LOCAL_ONLY` makes it a rule. "Local" means loopback and private addresses,
+single-label names (a Docker service such as `ollama`), and names under `.local`,
+`.lan`, `.internal` and `.home.arpa`. Nothing is resolved through DNS, so a public name
+never passes, whatever it points to. The check runs where each connection is configured:
+
+| What | Refused how |
+|---|---|
+| a hemisphere | `build_right` / `build_left` raise `ConfigError`. A hemisphere that does not expose a `base_url` (a plugin, say) is refused, since where it sends data cannot be told. The offline mocks pass. |
+| lookups | `searcher_from_settings` raises: Wikipedia and Brave always, SearXNG unless its URL is local. |
+| MCP servers | one reached by a URL that is not local is skipped and recorded in `errors`, like a server that failed. Servers started as a local command are allowed; what they reach is up to them. |
+| the webhook | not called, and a warning is logged. |
+
+`hemisphere-harness doctor` lists every destination a run would use and marks the ones
+that leave the machine.
 
 ## Providers
 

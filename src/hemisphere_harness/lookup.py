@@ -16,6 +16,8 @@ from abc import ABC, abstractmethod
 from typing import Any
 
 import httpx
+
+from . import local
 from .config import Settings
 from .errors import ConfigError
 from .schemas import Evidence
@@ -117,7 +119,7 @@ class BraveSearcher(Searcher):
 
     async def _search(self, query: str, limit: int) -> list[Evidence]:
         response = await self._client.get(
-            "https://api.search.brave.com/res/v1/web/search",
+            BRAVE_URL,
             params={"q": query, "count": str(limit)},
             headers={"X-Subscription-Token": self._key, "Accept": "application/json"},
         )
@@ -126,11 +128,19 @@ class BraveSearcher(Searcher):
         return [Evidence(title=r.get("title", ""), url=r.get("url", ""), snippet=r.get("description", "")) for r in results[:limit]]
 
 
+BRAVE_URL = "https://api.search.brave.com/res/v1/web/search"
+
+
 def searcher_from_settings(settings: Settings) -> Searcher | None:
     """The searcher HARNESS_LOOKUP names, or None if lookups are off."""
     kind = (settings.harness_lookup or "").strip().lower()
     if kind in ("", "off", "none"):
         return None
+    if settings.harness_local_only:
+        where = {"wikipedia": f"https://{settings.harness_lookup_language or 'en'}.wikipedia.org", "brave": BRAVE_URL}
+        url = where.get(kind, settings.harness_lookup_url)
+        if url:  # searxng without a URL is refused below, for that reason
+            local.require_local(f"HARNESS_LOOKUP={kind}", url)
     if kind == "wikipedia":
         return WikipediaSearcher(settings.harness_lookup_language or "en")
     if kind == "searxng":

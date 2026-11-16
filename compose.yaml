@@ -54,6 +54,7 @@ services:
       SEED_LEFT_MODEL: ${SEED_LEFT_MODEL:-tev1}
       SEED_RIGHT_MODEL: ${SEED_RIGHT_MODEL:-}
       SEED_OLLAMA_URL: http://ollama:11434
+      OLLAMA_HOST: http://ollama:11434   # where `auto` and `doctor` look for Ollama
     volumes:
       - harness:/data
     restart: unless-stopped
