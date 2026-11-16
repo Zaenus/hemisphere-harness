@@ -73,7 +73,7 @@ from .tools import FunctionToolbox, Toolbox, ToolResult, ToolSpec
 from .trace import Actor, Trace, TraceEvent, TracePrinter
 from .usage import HemisphereUsage, Usage
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 __all__ = [
     "ActionResult",

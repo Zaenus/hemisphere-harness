@@ -1,3 +1,4 @@
+import httpx
 import pytest
 
 OUR_VARIABLES = (
@@ -12,6 +13,7 @@ OUR_VARIABLES = (
     "RIGHT_EFFORT", "HARNESS_CHECK_ANSWERS", "HARNESS_MCP_CONFIG", "HARNESS_LOOKUP", "HARNESS_LOOKUP_URL",
     "HARNESS_LOOKUP_LANGUAGE", "BRAVE_API_KEY", "HARNESS_MEMORY", "HARNESS_MEMORY_FILE",
     "HARNESS_NOTIFY_URL", "HARNESS_NOTIFY_ON", "HARNESS_SCREEN_TOOL_OUTPUT", "RIGHT_PRICE_INPUT", "RIGHT_PRICE_OUTPUT",
+    "HARNESS_LOCAL_ONLY", "OLLAMA_HOST",
 )  # fmt: skip
 
 
@@ -31,3 +33,17 @@ def clean_env(monkeypatch, tmp_path):
 def no_rate_limit_waits(monkeypatch):
     """Rate-limit backoff is seconds long in real use; tests that hit a 429 need not wait."""
     monkeypatch.setattr("hemisphere_harness._http.RATE_LIMIT_BACKOFF_S", 0.0)
+
+
+def nothing_running(request):
+    raise httpx.ConnectError("connection refused", request=request)
+
+
+@pytest.fixture(autouse=True)
+def no_local_servers(monkeypatch):
+    """Nothing runs on this machine, as far as the auto providers and doctor can tell.
+
+    Tests that need a local server set hemisphere_harness.local.TRANSPORT themselves.
+    """
+    monkeypatch.setattr("hemisphere_harness.local.TRANSPORT", httpx.MockTransport(nothing_running))
+    monkeypatch.delenv("OLLAMA_HOST", raising=False)

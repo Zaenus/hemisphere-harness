@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from importlib.metadata import EntryPoint, entry_points
 from typing import Generic, TypeVar
 
+from . import local
 from .config import Settings
 from .errors import ConfigError
 from .left import ExperimentalLLMLeft, JevLeftHemisphere, LeftHemisphere, MockLeftHemisphere
@@ -158,13 +159,47 @@ RIGHT_SETTINGS = (
 
 
 def build_right(settings: Settings) -> RightHemisphere:
-    """The right hemisphere that RIGHT_PROVIDER names."""
-    return right_providers.build(settings.right_provider, settings)
+    """The right hemisphere that RIGHT_PROVIDER names. Refused if it breaks HARNESS_LOCAL_ONLY."""
+    built = right_providers.build(settings.right_provider, settings)
+    if settings.harness_local_only:
+        _stays_local("the right hemisphere", built)
+    return built
 
 
 def build_left(settings: Settings) -> LeftHemisphere:
-    """The left hemisphere that LEFT_PROVIDER names."""
-    return left_providers.build(settings.left_provider, settings)
+    """The left hemisphere that LEFT_PROVIDER names. Refused if it breaks HARNESS_LOCAL_ONLY."""
+    built = left_providers.build(settings.left_provider, settings)
+    if settings.harness_local_only:
+        _stays_local("the left hemisphere", built)
+    return built
+
+
+def endpoint(hemisphere: object) -> str | None:
+    """Where a hemisphere sends its requests: its `base_url`, if it has one."""
+    url = getattr(hemisphere, "base_url", None)
+    return url if isinstance(url, str) else None
+
+
+def _stays_local(what: str, hemisphere: RightHemisphere | LeftHemisphere) -> None:
+    from .right.mock import ScriptedRightHemisphere
+
+    if isinstance(hemisphere, (MockLeftHemisphere, ScriptedRightHemisphere)):
+        return  # no network at all
+    try:
+        local.require_local(f"{what} ({hemisphere.name})", endpoint(hemisphere))
+    except ConfigError:
+        _close_soon(hemisphere)
+        raise
+
+
+def _close_soon(hemisphere: RightHemisphere | LeftHemisphere) -> None:
+    """Release a hemisphere that is being refused, from sync code that may be inside a loop."""
+    import asyncio
+
+    try:
+        asyncio.get_running_loop().create_task(hemisphere.aclose())
+    except RuntimeError:
+        asyncio.run(hemisphere.aclose())
 
 
 def register_openai_compatible(
@@ -263,6 +298,41 @@ def _anthropic(settings: Settings) -> RightHemisphere:
     )
 
 
+def _auto_right(settings: Settings) -> RightHemisphere:
+    """A local server that serves RIGHT_MODEL; failing that, OpenAI if its key is set.
+
+    The OpenAI fallback keeps working what worked when OpenAI was the default.
+    """
+    if not settings.right_model:
+        raise ConfigError("no right hemisphere is configured: set RIGHT_MODEL (see .env.example)")
+    if settings.right_base_url:
+        return right_providers.build("openai-compatible", settings)
+    found = local.find_right(settings.right_model)
+    if found is not None:
+        at = settings.model_copy(update={"right_base_url": f"{found.server.url}/v1"})
+        return right_providers.build(found.server.provider, at)
+    if settings.env("OPENAI_API_KEY") or settings.right_api_key:
+        return right_providers.build("openai", settings)
+    running = [f for f in local.scan(decisions=False) if f.up]
+    seen = "; ".join(
+        f"{f.server.provider} serves {', '.join(m.id for m in f.models[:6]) or 'nothing'}" for f in running
+    )
+    raise ConfigError(
+        f"RIGHT_MODEL={settings.right_model} is not served by any local server "
+        + (f"({seen}). " if seen else "(none is running). ")
+        + "Pull it, or set RIGHT_PROVIDER to the hosted provider that serves it. "
+        "`hemisphere-harness doctor` shows what is available."
+    )
+
+
+register_right(
+    "auto",
+    _auto_right,
+    summary="a local server that serves RIGHT_MODEL (Ollama, LM Studio, llama.cpp, vLLM), else OpenAI if its key is set",
+    settings=("RIGHT_MODEL", "RIGHT_BASE_URL", "RIGHT_TIMEOUT_S", "RIGHT_TEMPERATURE", "RIGHT_JSON_MODE"),
+)
+
+
 register_right(
     "anthropic",
     _anthropic,
@@ -333,6 +403,19 @@ def _mock(settings: Settings) -> LeftHemisphere:
 
 
 def _auto(settings: Settings) -> LeftHemisphere:
+    """Local first: a decision model on Ollama, then hosted Jev if its key is set, then the mock.
+
+    With LEFT_MODEL set, only that model is considered locally. Without it, the largest
+    decision model Ollama serves is used. A chat model is never chosen: the experimental
+    left must be asked for by name.
+    """
+    url = settings.left_base_url or local.ollama_url()
+    available = local.decision_models(url)
+    if settings.left_model:
+        available = [m for m in available if local.same_model(settings.left_model, m.id)]
+    if available:
+        chosen = settings.model_copy(update={"left_model": available[0].id, "left_base_url": url})
+        return left_providers.build("ollama", chosen)
     return left_providers.build("jev" if settings.jev_api_key else "mock", settings)
 
 
@@ -346,7 +429,7 @@ register_left(
 )
 register_left(
     "ollama",
-    _system_one("ollama", OLLAMA, "autotrust-jev"),
+    _system_one("ollama", OLLAMA, "tev1"),
     summary=f"a decision model served by Ollama · {OLLAMA}/v1/systemone · no key · set LEFT_MODEL",
     base_url=OLLAMA,
     settings=("LEFT_MODEL", "LEFT_BASE_URL", "LEFT_TIMEOUT_S"),
@@ -366,4 +449,9 @@ register_left(
     experimental=True,
 )
 register_left("mock", _mock, summary="offline stand-in · no network, not calibrated")
-register_left("auto", _auto, summary="jev if JEV_API_KEY is set, otherwise mock")
+register_left(
+    "auto",
+    _auto,
+    summary="a decision model on Ollama, else jev if JEV_API_KEY is set, else mock",
+    settings=("LEFT_MODEL", "LEFT_BASE_URL"),
+)

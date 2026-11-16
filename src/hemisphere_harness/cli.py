@@ -2,6 +2,7 @@
 
     hemisphere-harness               list the providers available here
     hemisphere-harness providers     the same
+    hemisphere-harness doctor        what runs on this machine, what the settings make of it, where data goes
     hemisphere-harness web           start the web UI and open it in the browser
     hemisphere-harness chat          talk to the harness in the terminal
     hemisphere-harness eval          measure the left hemisphere on decisions with known answers
@@ -46,6 +47,7 @@ def list_providers() -> None:
         for label, summary in rows:
             print(f"  {label:<{width}}  {summary}")
         print()
+    print("To see what runs on this machine and what your settings make of it: hemisphere-harness doctor")
     print("To add a provider, see docs/providers.md.")
     print("To configure them in a browser: hemisphere-harness web")
 
@@ -54,6 +56,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="hemisphere-harness", description="The hemisphere agent harness.")
     commands = parser.add_subparsers(dest="command")
     commands.add_parser("providers", help="list the providers available here (the default)")
+    doctor = commands.add_parser("doctor", help="what runs on this machine, what the settings make of it, and where data goes")
+    doctor.add_argument("--check", action="store_true", help="also make one small real call to each hemisphere")
+    doctor.add_argument("--setup", action="store_true", help="choose local models and write them to the settings file")
+    doctor.add_argument("--env-file", type=Path, default=Path(".env"), help="settings file (default: ./.env)")
     web = commands.add_parser("web", help="start the web UI")
     web.add_argument("--host", default="127.0.0.1", help="address to listen on (default: 127.0.0.1)")
     web.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"port (default: {DEFAULT_PORT})")
@@ -91,6 +97,10 @@ def main(argv: list[str] | None = None) -> int:
     versus.add_argument("--env-file", type=Path, default=Path(".env"), help="settings file (default: ./.env)")
     args = parser.parse_args(argv)
 
+    if args.command == "doctor":
+        from .doctor import run as run_doctor
+
+        return run_doctor(args.env_file, do_check=args.check, do_setup=args.setup)
     if args.command == "compare":
         return run_compare_command(args)
     if args.command == "eval":
@@ -193,7 +203,7 @@ def run_chat(args: argparse.Namespace) -> int:
 
     async def session() -> None:
         try:
-            toolbox = await toolbox_from_settings(settings.harness_mcp_config)
+            toolbox = await toolbox_from_settings(settings.harness_mcp_config, local_only=settings.harness_local_only)
         except ConfigError as exc:
             print(exc, file=sys.stderr)
             return

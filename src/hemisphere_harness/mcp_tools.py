@@ -36,6 +36,7 @@ from typing import Any, TextIO
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from . import local
 from .errors import ConfigError
 from .tools import Approval, Toolbox, ToolResult, ToolSpec, needs_approval
 
@@ -84,11 +85,17 @@ def load_mcp_config(path: str | os.PathLike[str]) -> MCPConfig:
         raise ConfigError(f"MCP config {file} is not valid: {problems}") from None
 
 
-async def toolbox_from_settings(path: str | None, *, log_dir: Path | None = None) -> "MCPToolbox | None":
-    """Connect the servers in HARNESS_MCP_CONFIG, or return None if it is not set."""
+async def toolbox_from_settings(
+    path: str | None, *, log_dir: Path | None = None, local_only: bool = False
+) -> "MCPToolbox | None":
+    """Connect the servers in HARNESS_MCP_CONFIG, or return None if it is not set.
+
+    With `local_only` (HARNESS_LOCAL_ONLY), a server reached by a URL off this machine and
+    its network is skipped and recorded in `errors`, like a server that failed.
+    """
     if not path:
         return None
-    return await MCPToolbox.connect(load_mcp_config(path), log_dir=log_dir)
+    return await MCPToolbox.connect(load_mcp_config(path), log_dir=log_dir, local_only=local_only)
 
 
 class MCPToolbox(Toolbox):
@@ -103,7 +110,7 @@ class MCPToolbox(Toolbox):
         self._targets: dict[str, tuple[str, str]] = {}  # tool name -> (server, tool on that server)
 
     @classmethod
-    async def connect(cls, config: MCPConfig, *, log_dir: Path | None = None) -> "MCPToolbox":
+    async def connect(cls, config: MCPConfig, *, log_dir: Path | None = None, local_only: bool = False) -> "MCPToolbox":
         """Start or reach every enabled server and list its tools.
 
         A server that fails is recorded in `errors` and skipped. Local servers' own error
@@ -118,6 +125,8 @@ class MCPToolbox(Toolbox):
             if server.disabled:
                 continue
             try:
+                if local_only and server.url:
+                    local.require_local(f"the MCP server '{name}'", server.url)
                 await toolbox._open(name, server, log_dir)
             except Exception as exc:  # one bad server must not take the others down
                 message = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__

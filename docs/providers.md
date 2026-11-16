@@ -11,7 +11,8 @@ python -m hemisphere_harness      # lists every provider available in this envir
 
 | `RIGHT_PROVIDER` | Endpoint | Key variable |
 |---|---|---|
-| `openai` (default) | `https://api.openai.com/v1` | `OPENAI_API_KEY` |
+| `auto` (default) | a local server that serves `RIGHT_MODEL`: Ollama, LM Studio, llama.cpp or vLLM, at their usual ports. Failing that, `openai` if `OPENAI_API_KEY` is set | none |
+| `openai` | `https://api.openai.com/v1` | `OPENAI_API_KEY` |
 | `anthropic`, `claude` | Anthropic's API, through its SDK | `ANTHROPIC_API_KEY`, or an `ant auth login` profile |
 | `gemini`, `google` | `https://generativelanguage.googleapis.com/v1beta/openai` | `GEMINI_API_KEY` |
 | `nvidia`, `nim` | `https://integrate.api.nvidia.com/v1` | `NVIDIA_API_KEY` |
@@ -25,6 +26,14 @@ python -m hemisphere_harness      # lists every provider available in this envir
 
 `RIGHT_MODEL` is always required. No model names are built in, because catalogues change
 faster than this file would. Most of these servers list theirs at `GET {endpoint}/models`.
+
+**`auto` is local first.** It asks each local server, in the order of the table, which
+models it serves, and uses the first that has `RIGHT_MODEL` (an untagged Ollama name
+means `:latest`). Ollama is looked for where `OLLAMA_HOST` says, as Ollama's own client
+does. With `RIGHT_BASE_URL` set, `auto` is `openai-compatible` at that address. If no
+local server has the model, `auto` falls back to `openai` when `OPENAI_API_KEY` is set,
+so a configuration from before `auto` keeps working; otherwise it fails and says what is
+running. `hemisphere-harness doctor` shows the same, without starting a run.
 
 ```bash
 # NVIDIA
@@ -120,7 +129,7 @@ transport; not yet with a real key.
 
 | `LEFT_PROVIDER` | What it is | Needs |
 |---|---|---|
-| `auto` (default) | `jev` if `JEV_API_KEY` is set, otherwise `mock` | |
+| `auto` (default) | The largest decision model Ollama serves on this machine (only `LEFT_MODEL`, if it is set). Failing that, `jev` if `JEV_API_KEY` is set, otherwise `mock` | |
 | `jev` | TypeSafe AI's hosted Jev | `JEV_API_KEY` |
 | `ollama` | A decision model served by Ollama on your own machine | `LEFT_MODEL` |
 | `systemone` | Any other server that implements `POST /v1/systemone` | `LEFT_BASE_URL`, `LEFT_MODEL` |

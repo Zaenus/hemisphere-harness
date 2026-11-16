@@ -1,4 +1,4 @@
-"""The settings the web UI can change, and the .env file it keeps them in.
+"""The settings that can be changed from an interface (the web UI, `doctor`), and the .env file they are kept in.
 
 The UI writes to the same .env file that the command-line example reads, so both see the
 same configuration. Three rules hold throughout:
@@ -22,9 +22,9 @@ from typing import Any, Literal
 from dotenv import dotenv_values, set_key, unset_key
 from pydantic import ValidationError
 
-from ..config import Settings
-from ..errors import ConfigError
-from ..providers import left_providers, right_providers
+from .config import Settings
+from .errors import ConfigError
+from .providers import left_providers, right_providers
 
 Source = Literal["environment", "file", "default"]
 
@@ -69,6 +69,7 @@ FIELDS: tuple[Field, ...] = (
     Field("JEV_BASE_URL", "Jev base URL", aliases=("TYPESAFE_BASE_URL",)),
     Field("JEV_TIMEOUT_S", "Jev timeout (seconds)", "number"),
     # The loop.
+    Field("HARNESS_LOCAL_ONLY", "Keep everything on this machine", "bool", help="Refuse every hemisphere, lookup, webhook and MCP server that is not on this machine or its network. Local MCP servers started as a command are allowed, but what they reach is up to them."),
     Field("HARNESS_COMMIT_THRESHOLD", "Commit threshold", "number", help="Minimum probability of the left's pick for the left to commit on its own."),
     Field("HARNESS_PERMIT_YES_THRESHOLD", "Policy: allowed at or above", "number"),
     Field("HARNESS_PERMIT_NO_THRESHOLD", "Policy: refused at or below", "number", help="Only a human can approve an option the policy gate refuses."),

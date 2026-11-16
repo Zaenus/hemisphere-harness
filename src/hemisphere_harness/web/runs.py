@@ -20,6 +20,7 @@ from typing import Any, Literal, Self
 import httpx
 from pydantic import BaseModel, Field, model_validator
 
+from .. import local
 from ..config import HarnessConfig, Settings
 from ..errors import ConfigError, HarnessError
 from ..evals.signoffs import record_signoff, scenario_from_signoff
@@ -493,7 +494,9 @@ class RunManager:
         toolbox: MCPToolbox | None = None
         try:
             # Tools are connected for this run only, inside its task, and closed when it ends.
-            toolbox = await toolbox_from_settings(tools, log_dir=self.store.directory.parent)
+            toolbox = await toolbox_from_settings(
+                tools, log_dir=self.store.directory.parent, local_only=self._settings().harness_local_only
+            )
             if toolbox is not None:
                 run.tools = [tool.name for tool in toolbox.tools]
                 on_event(_tools_event(toolbox))
@@ -521,6 +524,9 @@ class RunManager:
     async def _notify(self, run: Run) -> None:
         settings = self._settings()
         if not settings.harness_notify_url or not should_notify(settings.harness_notify_on, run.status):
+            return
+        if settings.harness_local_only and not local.is_local_url(settings.harness_notify_url):
+            log.warning("HARNESS_LOCAL_ONLY is on, so the notification webhook, which is not local, was not called")
             return
         link = f"{self._base_url}#/c/{run.conversation_id}"
         await notify(settings.harness_notify_url, run_id=run.id, status=run.status, goal=run.goal, link=link, transport=self._transport)

@@ -643,3 +643,21 @@ def test_notify_on_all_includes_finished_runs():
     assert should_notify("signoff", "needs_human") and not should_notify("signoff", "done")
     assert should_notify("all", "done") and should_notify("all", "failed") and not should_notify("all", "running")
     assert message("done", "x" * 300, "L").count("x") == 119
+
+
+async def test_auto_lists_the_models_of_every_local_server(clean_env, tmp_path, monkeypatch):
+    def machine(request: httpx.Request) -> httpx.Response:
+        if request.url.port == 11434 and request.url.path == "/api/tags":
+            return httpx.Response(200, json={"models": [{"name": "gemma4:latest"}]})
+        if request.url.port == 1234 and request.url.path == "/v1/models":
+            return httpx.Response(200, json={"data": [{"id": "qwen3-8b"}]})
+        raise httpx.ConnectError("refused", request=request)
+
+    monkeypatch.setattr("hemisphere_harness.local.TRANSPORT", httpx.MockTransport(machine))
+    async with client(make_app(tmp_path)) as http:
+        response = await http.post("/api/models", headers=AUTH, json={"hemisphere": "right", "provider": "auto"})
+
+    assert response.json()["models"] == [
+        {"id": "gemma4:latest", "server": "ollama"},
+        {"id": "qwen3-8b", "server": "lmstudio"},
+    ]
