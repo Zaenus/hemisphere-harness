@@ -135,3 +135,71 @@ async def test_api_failure_raises_right_hemisphere_error():
 async def test_response_without_content_raises():
     with pytest.raises(RightHemisphereError, match="no message content"):
         await right(lambda request: httpx.Response(200, json={"choices": []})).propose(STATE)
+
+
+# --- Local reasoning models that leave their thinking in the reply -----------------------
+
+THINKING = '<think>The shape wants {"options": [...]}; two options, then.</think>\n'
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        THINKING + PROPOSAL_JSON,
+        THINKING.replace("think>", "thinking>") + PROPOSAL_JSON,
+        # The template opened the block itself, so only its end is in the reply.
+        'two options {"a": then}.</think>\n' + PROPOSAL_JSON,
+        # Braces in prose before the object.
+        "Using {braces} loosely, here it is: " + PROPOSAL_JSON,
+    ],
+)
+async def test_parses_json_after_thinking_or_stray_braces(reply):
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return completion(reply)
+
+    proposal = await right(handler).propose(STATE)
+
+    assert [option.id for option in proposal.options] == ["unlock", "ask"]
+    assert calls == 1  # no repair round needed
+
+
+async def test_generate_leaves_the_thinking_out_of_the_answer():
+    text = await right(lambda request: completion("<think>Keep it short.</think>\n\nAll done.")).generate("Summarise.")
+
+    assert text == "All done."
+
+
+async def test_a_reply_that_is_all_thinking_is_an_error():
+    with pytest.raises(RightHemisphereError, match="all thinking"):
+        await right(lambda request: completion("<think>Still deciding")).generate("Summarise.")
+
+
+def sse(*pieces: str) -> str:
+    events = [f"data: {json.dumps({'choices': [{'delta': {'content': p}}]})}\n\n" for p in pieces]
+    return "".join(events) + "data: [DONE]\n\n"
+
+
+def streaming(*pieces: str) -> OpenAICompatibleRight:
+    return right(lambda request: httpx.Response(200, text=sse(*pieces), headers={"content-type": "text/event-stream"}))
+
+
+async def test_the_stream_drops_thinking_even_when_its_tags_are_split():
+    pieces = [p async for p in streaming("<thi", "nk>plan {it}</th", "ink>", "Bitcoin is ", "decentralized <", "3").stream("Answer.")]
+
+    assert "".join(pieces) == "Bitcoin is decentralized <3"
+
+
+async def test_the_stream_keeps_a_trailing_angle_bracket():
+    pieces = [p async for p in streaming("x is ", "<").stream("Answer.")]
+
+    assert "".join(pieces) == "x is <"
+
+
+async def test_thinking_that_leaks_into_the_stream_is_withdrawn():
+    # The harness withdraws a failed stream and generates the answer whole.
+    with pytest.raises(RightHemisphereError, match="thinking reached the answer stream"):
+        [p async for p in streaming("weighing it ", "up</think>", "The answer.").stream("Answer.")]
